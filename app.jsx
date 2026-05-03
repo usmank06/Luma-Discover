@@ -44,7 +44,7 @@ async function fetchEvents({ bbox, slug, cursor, limit = 50 }) {
   });
   if (slug) params.set("slug", slug);
   if (cursor) params.set("pagination_cursor", cursor);
-  const url = `https://api2.luma.com/discover/get-paginated-events?${params}`;
+  const url = `https://corsproxy.io/?url=https://api2.luma.com/discover/get-paginated-events?${params}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
