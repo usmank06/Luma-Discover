@@ -7,16 +7,13 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 const CATEGORIES = [
   { slug: "",         label: "All",        emoji: "✦" },
   { slug: "tech",     label: "Tech",       emoji: "⌨" },
+  { slug: "food",     label: "Food",       emoji: "✻" },
   { slug: "ai",       label: "AI",         emoji: "✦" },
-  { slug: "startup",  label: "Startup",    emoji: "▲" },
-  { slug: "crypto",   label: "Crypto",     emoji: "◆" },
-  { slug: "art",      label: "Art",        emoji: "✺" },
-  { slug: "music",    label: "Music",      emoji: "♪" },
+  { slug: "arts",     label: "Arts",       emoji: "✺" },
+  { slug: "climate",  label: "Climate",    emoji: "◐" },
   { slug: "fitness",  label: "Fitness",    emoji: "↟" },
   { slug: "wellness", label: "Wellness",   emoji: "❀" },
-  { slug: "climate",  label: "Climate",    emoji: "◐" },
-  { slug: "food",     label: "Food",       emoji: "✻" },
-  { slug: "social",   label: "Social",     emoji: "○" },
+  { slug: "crypto",   label: "Crypto",     emoji: "◆" },
 ];
 
 const SORT_OPTIONS = [
