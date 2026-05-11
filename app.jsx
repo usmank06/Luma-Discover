@@ -33,6 +33,9 @@ const DEFAULT_BBOX = {
   north: 33.21840836,
 };
 
+// Soft cap — auto-paginate up to this, then require user action ("Load more" / "Fetch all")
+const AUTO_CAP = 100;
+
 // ── API ──────────────────────────────────────────────────────
 async function fetchEvents({ bbox, slug, cursor, limit = 50 }) {
   const params = new URLSearchParams({
@@ -44,7 +47,7 @@ async function fetchEvents({ bbox, slug, cursor, limit = 50 }) {
   });
   if (slug) params.set("slug", slug);
   if (cursor) params.set("pagination_cursor", cursor);
-  const url = `https://corsproxy.io/?url=https://api2.luma.com/discover/get-paginated-events?${params}`;
+  const url = `https://proxy.corsfix.com/?https://api2.luma.com/discover/get-paginated-events?${params}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -178,6 +181,7 @@ function App() {
   const [error, setError] = useState(null);
   const [nextCursor, setNextCursor] = useState(null);
   const [hasMore, setHasMore] = useState(false);
+  const [fetchAll, setFetchAll] = useState(false);
 
   const [filters, setFilters] = useState(FILTER_DEFAULTS);
   const [sortId, setSortId] = useState("soonest");
@@ -189,7 +193,6 @@ function App() {
     catch { return []; }
   });
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
-  const [autoSearchOnPan, setAutoSearchOnPan] = useState(false);
   const [toast, setToast] = useState(null);
 
   // Apply theme
@@ -206,12 +209,13 @@ function App() {
   const search = useCallback(async (opts = {}) => {
     setLoading(true);
     setError(null);
+    if (!opts.append) setFetchAll(false);
     try {
       const data = await fetchEvents({
         bbox: opts.bbox || bbox,
         slug: opts.slug !== undefined ? opts.slug : slug,
         cursor: opts.append ? nextCursor : null,
-        limit: 50,
+        limit: opts.limit || 50,
       });
       const newEntries = data.entries || [];
       setEntries(prev => opts.append ? [...prev, ...newEntries] : newEntries);
@@ -219,10 +223,30 @@ function App() {
       setHasMore(!!data.has_more);
     } catch (err) {
       setError(err.message || "Failed to fetch");
+      setFetchAll(false);
     } finally {
       setLoading(false);
     }
   }, [bbox, slug, nextCursor]);
+
+  // Auto-paginate up to AUTO_CAP (clamping the next request so we never overshoot),
+  // or unbounded when fetchAll is on.
+  useEffect(() => {
+    if (loading || error || !nextCursor) return;
+    if (fetchAll) {
+      search({ append: true });
+      return;
+    }
+    const remaining = AUTO_CAP - entries.length;
+    if (remaining > 0) {
+      search({ append: true, limit: Math.min(50, remaining) });
+    }
+  }, [loading, error, nextCursor, entries.length, fetchAll, search]);
+
+  // Stop fetch-all when there's nothing left
+  useEffect(() => {
+    if (fetchAll && !nextCursor && !loading) setFetchAll(false);
+  }, [fetchAll, nextCursor, loading]);
 
   // Initial load
   useEffect(() => {
@@ -292,7 +316,7 @@ function App() {
   const onMapMove = (newBbox, center) => {
     setBbox(newBbox);
     setMapCenter(center);
-    if (autoSearchOnPan) search({ bbox: newBbox });
+    search({ bbox: newBbox });
   };
 
   const layout = !tweaks.showMap ? "hide-map" : (tweaks.layout === "map-left" ? "map-left" : "map-right");
@@ -300,10 +324,6 @@ function App() {
   return (
     <>
       <div className="app-bg" />
-      <Header
-        theme={theme}
-        onToggleTheme={() => setTheme(t => t === "light" ? "dark" : "light")}
-      />
       <FilterBar
         keywords={filters.keywords}
         onKeywords={v => setFilters(f => ({ ...f, keywords: v }))}
@@ -318,6 +338,8 @@ function App() {
         showPinnedOnly={showPinnedOnly}
         onTogglePinned={() => setShowPinnedOnly(v => !v)}
         pinnedCount={pinned.length}
+        theme={theme}
+        onToggleTheme={() => setTheme(t => t === "light" ? "dark" : "light")}
       />
       <CategoryStrip
         categories={CATEGORIES}
@@ -331,6 +353,10 @@ function App() {
             total={entries.length}
             loading={loading}
             sortLabel={SORT_OPTIONS.find(s => s.id === sortId)?.label}
+            hasMore={hasMore}
+            cap={AUTO_CAP}
+            fetchingAll={fetchAll}
+            onFetchAll={() => setFetchAll(true)}
           />
           {error && (
             <div className="state">
@@ -369,10 +395,13 @@ function App() {
               onTogglePin={() => togglePin(entry.event.api_id)}
             />
           ))}
-          {hasMore && entries.length > 0 && (
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
+          {hasMore && entries.length >= AUTO_CAP && !fetchAll && (
+            <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 16 }}>
               <button className="btn" onClick={() => search({ append: true })} disabled={loading}>
                 {loading ? "Loading…" : "Load more"}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setFetchAll(true)} disabled={loading}>
+                Fetch all
               </button>
             </div>
           )}
@@ -385,9 +414,6 @@ function App() {
               onChange={onMapMove}
               hoveredId={hoveredId}
               onHover={setHoveredId}
-              autoSearchOnPan={autoSearchOnPan}
-              onToggleAutoSearch={() => setAutoSearchOnPan(v => !v)}
-              onSearchHere={() => search()}
               loading={loading}
               theme={theme}
             />

@@ -28,27 +28,9 @@ function Icon({ name, size = 16, ...rest }) {
     case "refresh": return <svg {...props}><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></svg>;
     case "target":  return <svg {...props}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>;
     case "spark":   return <svg {...props}><path d="M12 3v6M12 15v6M3 12h6M15 12h6M5.6 5.6l4.2 4.2M14.2 14.2l4.2 4.2M5.6 18.4l4.2-4.2M14.2 9.8l4.2-4.2"/></svg>;
+    case "github":  return <svg {...props}><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg>;
     default: return null;
   }
-}
-
-// ── Header ───────────────────────────────────────────────────
-function Header({ theme, onToggleTheme }) {
-  return (
-    <header className="header">
-      <div className="brand">
-        <span className="brand-mark"></span>
-        <span>Discover</span>
-        <span className="brand-tag">v0.1</span>
-      </div>
-      <div className="header-right">
-        <span className="kbd" title="Press / to focus search">/</span>
-        <button className="btn btn-ghost btn-icon" onClick={onToggleTheme} title="Toggle theme (T)">
-          <Icon name={theme === "light" ? "moon" : "sun"} size={15} />
-        </button>
-      </div>
-    </header>
-  );
 }
 
 // ── Filter bar ───────────────────────────────────────────────
@@ -63,7 +45,8 @@ const SORT_OPTIONS = [
 
 function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort,
                      onOpenAdvanced, activeFilterCount, onSearch, loading,
-                     showPinnedOnly, onTogglePinned, pinnedCount }) {
+                     showPinnedOnly, onTogglePinned, pinnedCount,
+                     theme, onToggleTheme }) {
   return (
     <div className="filterbar">
       <div className="search-wrap">
@@ -116,6 +99,13 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
         <Icon name="refresh" size={13} />
         {loading ? "Searching…" : "Refresh"}
       </button>
+
+      <button className="btn btn-ghost btn-icon" onClick={onToggleTheme} title="Toggle theme (T)">
+        <Icon name={theme === "light" ? "moon" : "sun"} size={15} />
+      </button>
+      <a className="btn btn-ghost btn-icon" href="https://github.com/usmank06/Luma-Discover" target="_blank" rel="noopener noreferrer" title="View on GitHub">
+        <Icon name="github" size={15} />
+      </a>
     </div>
   );
 }
@@ -140,14 +130,27 @@ function CategoryStrip({ categories, active, onSelect }) {
 }
 
 // ── Results header ───────────────────────────────────────────
-function ResultsHeader({ count, total, loading, sortLabel }) {
+function ResultsHeader({ count, total, loading, sortLabel, hasMore, cap, fetchingAll, onFetchAll }) {
+  const capped = hasMore && total >= (cap || Infinity);
+  const headline = capped ? `${total}+ events` : `${count} ${count === 1 ? "event" : "events"}`;
+  const filteredOut = total - count;
   return (
     <div className="results-header">
       <h2 className="results-count">
-        {count} {count === 1 ? "event" : "events"}
-        {total > count && <em> · {total - count} filtered</em>}
+        {headline}
+        {!capped && filteredOut > 0 && <em> · {filteredOut} filtered</em>}
       </h2>
       <div className="results-meta">
+        {hasMore && (
+          <button
+            className="btn btn-sm"
+            onClick={onFetchAll}
+            disabled={fetchingAll || loading}
+            title="Page through every available event"
+          >
+            {fetchingAll ? "Fetching all…" : "Fetch all"}
+          </button>
+        )}
         {loading && <span className="dot-pulse">Updating…</span>}
         <span style={{ opacity: 0.6 }}>·</span>
         <span>{sortLabel}</span>
@@ -256,11 +259,9 @@ function SkeletonList({ count = 3 }) {
 }
 
 // ── Map ──────────────────────────────────────────────────────
-function MapView({ entries, bbox, onChange, hoveredId, onHover, autoSearchOnPan,
-                   onToggleAutoSearch, onSearchHere, loading, theme }) {
+function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }) {
   const containerRef = useR(null);
   const mapRef = useR(null);
-  const rectRef = useR(null);
   const markersRef = useR({});
   const moveTimer = useR(null);
 
@@ -300,23 +301,10 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, autoSearchOnPan,
         };
         const c = map.getCenter();
         onChange(newBbox, { lat: c.lat, lng: c.lng });
-
-        if (rectRef.current) {
-          rectRef.current.setBounds([
-            [newBbox.south, newBbox.west],
-            [newBbox.north, newBbox.east],
-          ]);
-        }
       }, 250);
     };
     map.on("moveend", handleMove);
     map.on("zoomend", handleMove);
-
-    // Visible bounds rectangle
-    rectRef.current = L.rectangle([
-      [bbox.south, bbox.west],
-      [bbox.north, bbox.east],
-    ], { className: "bbox-rect", interactive: false }).addTo(map);
 
     return () => {
       map.off("moveend", handleMove);
@@ -334,19 +322,60 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, autoSearchOnPan,
     Object.values(markersRef.current).forEach(m => map.removeLayer(m));
     markersRef.current = {};
 
-    entries.forEach((entry, i) => {
+    const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+
+    entries.forEach((entry) => {
       const c = entry.event.coordinate;
       if (!c) return;
       const id = entry.event.api_id;
-      const num = i + 1;
+      const e = entry.event;
       const icon = L.divIcon({
         className: "",
-        html: `<div class="custom-pin" data-id="${id}" data-hovered="${hoveredId === id}">${num}</div>`,
-        iconSize: [28, 28],
-        iconAnchor: [0, 0],
+        html: `<div class="map-pin" data-id="${id}" data-hovered="${hoveredId === id}">
+          <svg viewBox="0 0 24 32" width="24" height="32" aria-hidden="true">
+            <path class="map-pin-shape" d="M12 1c5.5 0 10 4.3 10 9.7 0 7.3-10 20.3-10 20.3S2 18 2 10.7C2 5.3 6.5 1 12 1z"/>
+            <circle class="map-pin-dot" cx="12" cy="11" r="3.2"/>
+          </svg>
+        </div>`,
+        iconSize: [24, 32],
+        iconAnchor: [12, 32],
       });
+
+      const host = entry.hosts?.[0];
+      const calName = entry.calendar?.name;
+      const city = e.geo_address_info?.city_state || e.geo_address_info?.city
+                  || (e.location_type === "online" ? "Online" : "");
+      const venue = e.geo_address_info?.address || e.geo_address_info?.sublocality;
+      const time = formatTimeRange(entry.start_at, e.end_at, e.timezone);
+      const tags = [];
+      if (entry.ticket_info?.is_free) tags.push(`<span class="map-tip-tag accent">Free</span>`);
+      if (entry.ticket_info?.spots_remaining > 0 && entry.ticket_info?.spots_remaining < 10)
+        tags.push(`<span class="map-tip-tag accent">${entry.ticket_info.spots_remaining} spots left</span>`);
+      if (e.location_type === "online") tags.push(`<span class="map-tip-tag info">Online</span>`);
+
+      const tipHtml = `
+        <div class="map-tip">
+          ${e.cover_url ? `<div class="map-tip-cover" style="background-image:url('${escapeHtml(e.cover_url)}')"></div>` : ""}
+          <div class="map-tip-body">
+            <div class="map-tip-time">${escapeHtml(time)}</div>
+            <div class="map-tip-title">${escapeHtml(e.name || "Untitled")}</div>
+            <div class="map-tip-loc">${escapeHtml(venue ? `${venue}, ${city}` : city)}</div>
+            ${host || calName ? `<div class="map-tip-host">by ${escapeHtml(calName || host?.name || "")}</div>` : ""}
+            ${tags.length ? `<div class="map-tip-tags">${tags.join("")}</div>` : ""}
+          </div>
+        </div>`;
+
       const marker = L.marker([c.latitude, c.longitude], { icon })
-        .addTo(map);
+        .addTo(map)
+        .bindTooltip(tipHtml, {
+          direction: "top",
+          offset: [0, -28],
+          opacity: 1,
+          className: "map-tip-tooltip",
+          sticky: false,
+        });
       marker.on("mouseover", () => onHover(id));
       marker.on("mouseout", () => onHover(null));
       marker.on("click", () => window.open(`https://lu.ma/${entry.event.url}`, "_blank"));
@@ -356,7 +385,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, autoSearchOnPan,
 
   // Update hover state on existing pins (without rebuilding)
   useE(() => {
-    document.querySelectorAll(".custom-pin").forEach(el => {
+    document.querySelectorAll(".map-pin").forEach(el => {
       const id = el.dataset.id;
       el.dataset.hovered = (id === hoveredId) ? "true" : "false";
     });
@@ -377,11 +406,13 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, autoSearchOnPan,
         </div>
       </div>
       <div className="map-controls">
-        <button className="map-btn" onClick={onSearchHere} title="Search this area">
+        <button className="map-btn" title="Find my location" onClick={() => {
+          if (!navigator.geolocation) return;
+          navigator.geolocation.getCurrentPosition(pos => {
+            mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 13);
+          });
+        }}>
           <Icon name="target" size={16} />
-        </button>
-        <button className="map-btn" data-active={autoSearchOnPan} onClick={onToggleAutoSearch} title="Auto-search on pan">
-          <Icon name="spark" size={15} />
         </button>
       </div>
     </>
@@ -556,6 +587,6 @@ function DiscoverTweaks({ tweaks, setTweak, theme, setTheme }) {
   );
 }
 
-Object.assign(window, { Icon, Header, FilterBar, CategoryStrip, ResultsHeader,
+Object.assign(window, { Icon, FilterBar, CategoryStrip, ResultsHeader,
   EventCard, SkeletonList, MapView, AdvancedFilters, DiscoverTweaks,
   SORT_OPTIONS, FILTER_DEFAULTS });
