@@ -149,7 +149,9 @@ async function fetchOne({ bbox, slug, cursor, limit = 50 }) {
   });
   if (slug) params.set("slug", slug);
   if (cursor) params.set("pagination_cursor", cursor);
-  const url = `https://proxy.corsfix.com/?https://api2.luma.com/discover/get-paginated-events?${params}`;
+
+  // This is Luma's API, just proxied through cloudflare workers, to avoid CORS
+  const url = `https://morning-hall-2db3.musmank006.workers.dev/discover/get-paginated-events?${params}`;
   return rateAwareJSON(url);
 }
 
