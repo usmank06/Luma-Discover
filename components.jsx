@@ -57,6 +57,7 @@ function FilterBar({ keywords, onKeywords,
       : `${selected.length} selected`;
   return (
     <div className="filterbar">
+      <div className="brand" data-tooltip="Not affiliated with Luma">Discover</div>
       <div className="search-wrap">
         <Icon name="search" size={15} />
         <input
