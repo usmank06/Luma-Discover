@@ -44,9 +44,17 @@ const SORT_OPTIONS = [
 ];
 
 function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort,
+                     categories, selectedSlugs, categoryMenuOpen, onToggleCategoryMenu,
+                     onToggleSlug, onClearSlugs,
                      onOpenAdvanced, activeFilterCount, onSearch, loading,
                      showPinnedOnly, onTogglePinned, pinnedCount,
                      theme, onToggleTheme }) {
+  const selected = (selectedSlugs || []).filter(s => s);
+  const categoryLabel = selected.length === 0
+    ? "All"
+    : selected.length === 1
+      ? (categories.find(c => c.slug === selected[0])?.label || selected[0])
+      : `${selected.length} selected`;
   return (
     <div className="filterbar">
       <div className="search-wrap">
@@ -60,6 +68,38 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
           onKeyDown={e => { if (e.key === "Enter") onSearch(); }}
         />
         {!keywords && <span className="search-kbd">/</span>}
+      </div>
+
+      <div className="menu-rel">
+        <button className="chip" onClick={onToggleCategoryMenu}>
+          Category: {categoryLabel}
+          {selected.length > 0 && <span className="chip-count">{selected.length}</span>}
+          <Icon name="chevdown" size={13} />
+        </button>
+        {categoryMenuOpen && (
+          <div className="menu menu-multi" onMouseLeave={onToggleCategoryMenu}>
+            <button data-active={selected.length === 0} onClick={onClearSlugs}>
+              <span className="menu-row-main">
+                <span className="cat-chip-emoji">✦</span>
+                All
+              </span>
+              {selected.length === 0 && <span className="check"><Icon name="check" size={13} /></span>}
+            </button>
+            <div className="menu-sep" />
+            {categories.filter(c => c.slug).map(c => {
+              const on = selected.includes(c.slug);
+              return (
+                <button key={c.slug} data-active={on} onClick={() => onToggleSlug(c.slug)}>
+                  <span className="menu-row-main">
+                    <span className="cat-chip-emoji">{c.emoji}</span>
+                    {c.label}
+                  </span>
+                  {on && <span className="check"><Icon name="check" size={13} /></span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <button className="chip" onClick={onOpenAdvanced} title="Advanced filters (F)">
@@ -110,30 +150,17 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
   );
 }
 
-// ── Category strip ───────────────────────────────────────────
-function CategoryStrip({ categories, active, onSelect }) {
-  return (
-    <div className="cat-strip">
-      {categories.map(c => (
-        <button
-          key={c.slug}
-          className="cat-chip"
-          data-active={c.slug === active}
-          onClick={() => onSelect(c.slug)}
-        >
-          <span className="cat-chip-emoji">{c.emoji}</span>
-          {c.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 // ── Results header ───────────────────────────────────────────
-function ResultsHeader({ count, total, loading, sortLabel, hasMore, cap, fetchingAll, onFetchAll }) {
+function ResultsHeader({ count, total, loading, sortLabel, hasMore, cap, fetchingAll, onFetchAll, rateState }) {
   const capped = hasMore && total >= (cap || Infinity);
   const headline = capped ? `${total}+ events` : `${count} ${count === 1 ? "event" : "events"}`;
   const filteredOut = total - count;
+
+  const now = Date.now();
+  const waiting = rateState && rateState.waitingUntil > now;
+  const waitS = waiting ? Math.max(1, Math.ceil((rateState.waitingUntil - now) / 1000)) : 0;
+  const lowBudget = rateState && rateState.limit > 0 && rateState.remaining <= 5 && !waiting;
+
   return (
     <div className="results-header">
       <h2 className="results-count">
@@ -145,13 +172,24 @@ function ResultsHeader({ count, total, loading, sortLabel, hasMore, cap, fetchin
           <button
             className="btn btn-sm"
             onClick={onFetchAll}
-            disabled={fetchingAll || loading}
+            disabled={fetchingAll || loading || waiting}
             title="Page through every available event"
           >
             {fetchingAll ? "Fetching all…" : "Fetch all"}
           </button>
         )}
-        {loading && <span className="dot-pulse">Updating…</span>}
+        {waiting && (
+          <span className="rate-pill" title="Rate-limited by the upstream API; we'll resume automatically">
+            <Icon name="alert" size={12} />
+            Rate-limited · resuming in {waitS}s
+          </span>
+        )}
+        {!waiting && lowBudget && (
+          <span className="rate-pill rate-pill-soft" title={`${rateState.remaining}/${rateState.limit} requests left in this window`}>
+            Slowing down · {rateState.remaining} left
+          </span>
+        )}
+        {loading && !waiting && <span className="dot-pulse">Updating…</span>}
         <span style={{ opacity: 0.6 }}>·</span>
         <span>{sortLabel}</span>
       </div>
@@ -343,27 +381,18 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
         iconAnchor: [12, 32],
       });
 
-      const host = entry.hosts?.[0];
-      const calName = entry.calendar?.name;
-      const city = e.geo_address_info?.city_state || e.geo_address_info?.city
-                  || (e.location_type === "online" ? "Online" : "");
-      const venue = e.geo_address_info?.address || e.geo_address_info?.sublocality;
-      const time = formatTimeRange(entry.start_at, e.end_at, e.timezone);
-      const tags = [];
-      if (entry.ticket_info?.is_free) tags.push(`<span class="map-tip-tag accent">Free</span>`);
-      if (entry.ticket_info?.spots_remaining > 0 && entry.ticket_info?.spots_remaining < 10)
-        tags.push(`<span class="map-tip-tag accent">${entry.ticket_info.spots_remaining} spots left</span>`);
-      if (e.location_type === "online") tags.push(`<span class="map-tip-tag info">Online</span>`);
+      const startDate = new Date(entry.start_at);
+      const dateLabel = startDate.toLocaleDateString(undefined, {
+        month: "short", day: "numeric",
+        timeZone: e.timezone || undefined,
+      });
 
       const tipHtml = `
         <div class="map-tip">
-          ${e.cover_url ? `<div class="map-tip-cover" style="background-image:url('${escapeHtml(e.cover_url)}')"></div>` : ""}
+          ${e.cover_url ? `<div class="map-tip-thumb" style="background-image:url('${escapeHtml(e.cover_url)}')"></div>` : `<div class="map-tip-thumb map-tip-thumb-fallback"></div>`}
           <div class="map-tip-body">
-            <div class="map-tip-time">${escapeHtml(time)}</div>
             <div class="map-tip-title">${escapeHtml(e.name || "Untitled")}</div>
-            <div class="map-tip-loc">${escapeHtml(venue ? `${venue}, ${city}` : city)}</div>
-            ${host || calName ? `<div class="map-tip-host">by ${escapeHtml(calName || host?.name || "")}</div>` : ""}
-            ${tags.length ? `<div class="map-tip-tags">${tags.join("")}</div>` : ""}
+            <div class="map-tip-date">${escapeHtml(dateLabel)}</div>
           </div>
         </div>`;
 
@@ -399,12 +428,6 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
   return (
     <>
       <div ref={containerRef} id="map"></div>
-      <div className="map-overlay">
-        <div className="map-pill">
-          <span className={"dot " + (loading ? "live" : "")}></span>
-          {entries.length} on map
-        </div>
-      </div>
       <div className="map-controls">
         <button className="map-btn" title="Find my location" onClick={() => {
           if (!navigator.geolocation) return;
@@ -587,6 +610,6 @@ function DiscoverTweaks({ tweaks, setTweak, theme, setTheme }) {
   );
 }
 
-Object.assign(window, { Icon, FilterBar, CategoryStrip, ResultsHeader,
+Object.assign(window, { Icon, FilterBar, ResultsHeader,
   EventCard, SkeletonList, MapView, AdvancedFilters, DiscoverTweaks,
   SORT_OPTIONS, FILTER_DEFAULTS });

@@ -36,8 +36,113 @@ const DEFAULT_BBOX = {
 // Soft cap — auto-paginate up to this, then require user action ("Load more" / "Fetch all")
 const AUTO_CAP = 100;
 
+// ── Rate-aware fetch ─────────────────────────────────────────
+// Luma's response carries x-ratelimit-* headers. We track them so the client
+// can: (1) cap concurrency, (2) pre-emptively pause when remaining is low,
+// (3) auto-retry once on 403/429 by waiting until x-ratelimit-reset.
+
+const MAX_CONCURRENT_REQUESTS = 2;
+const RATE_SAFE_BUFFER = 2;   // pause until reset if remaining drops to this
+const MAX_RATE_RETRIES = 2;
+
+const rate = {
+  limit: 60,
+  remaining: 60,
+  reset: 0,        // ms epoch
+  inflight: 0,
+  waitingUntil: 0, // for UI: ms epoch we're currently sleeping toward
+  listeners: new Set(),
+};
+
+function rateSubscribe(fn) {
+  rate.listeners.add(fn);
+  return () => rate.listeners.delete(fn);
+}
+function rateNotify() {
+  rate.listeners.forEach(fn => { try { fn(rateSnapshot()); } catch {} });
+}
+function rateSnapshot() {
+  return {
+    limit: rate.limit,
+    remaining: rate.remaining,
+    reset: rate.reset,
+    waitingUntil: rate.waitingUntil,
+  };
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, ms)));
+
+function readRateHeaders(headers) {
+  const num = (k) => {
+    const v = headers.get(k);
+    if (v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const lim = num("x-ratelimit-limit");
+  const rem = num("x-ratelimit-remaining");
+  const rst = num("x-ratelimit-reset");
+  let changed = false;
+  if (lim != null && lim !== rate.limit) { rate.limit = lim; changed = true; }
+  if (rem != null && rem !== rate.remaining) { rate.remaining = rem; changed = true; }
+  if (rst != null && rst !== rate.reset) { rate.reset = rst; changed = true; }
+  if (changed) rateNotify();
+}
+
+async function acquireBudget() {
+  // 1) Concurrency cap.
+  while (rate.inflight >= MAX_CONCURRENT_REQUESTS) {
+    await sleep(40);
+  }
+  // 2) Pre-emptive pause: if remaining is critically low and the window
+  //    hasn't reset yet, sleep until reset.
+  if (rate.remaining <= RATE_SAFE_BUFFER && rate.reset > Date.now()) {
+    rate.waitingUntil = rate.reset + 100;
+    rateNotify();
+    await sleep(rate.waitingUntil - Date.now());
+    rate.waitingUntil = 0;
+    // Assume the window reset; remaining will be refreshed by the next response.
+    rate.remaining = rate.limit;
+    rateNotify();
+  }
+}
+
+async function rateAwareJSON(url) {
+  for (let attempt = 0; attempt <= MAX_RATE_RETRIES; attempt++) {
+    await acquireBudget();
+    rate.inflight++;
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      rate.inflight--;
+      throw err;
+    }
+    rate.inflight--;
+    readRateHeaders(res.headers);
+
+    if (res.status === 429 || res.status === 403) {
+      // Treat as rate limited; wait until reset and retry.
+      const resetAt = rate.reset && rate.reset > Date.now() ? rate.reset : Date.now() + 5000;
+      const waitMs = (resetAt - Date.now()) + 200;
+      if (attempt < MAX_RATE_RETRIES) {
+        rate.waitingUntil = Date.now() + waitMs;
+        rateNotify();
+        await sleep(waitMs);
+        rate.waitingUntil = 0;
+        rate.remaining = rate.limit;
+        rateNotify();
+        continue;
+      }
+      throw new Error(`Rate limited (HTTP ${res.status}). Try again in ~${Math.ceil(waitMs / 1000)}s.`);
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+}
+
 // ── API ──────────────────────────────────────────────────────
-async function fetchEvents({ bbox, slug, cursor, limit = 50 }) {
+async function fetchOne({ bbox, slug, cursor, limit = 50 }) {
   const params = new URLSearchParams({
     east:  String(bbox.east),
     north: String(bbox.north),
@@ -48,9 +153,28 @@ async function fetchEvents({ bbox, slug, cursor, limit = 50 }) {
   if (slug) params.set("slug", slug);
   if (cursor) params.set("pagination_cursor", cursor);
   const url = `https://proxy.corsfix.com/?https://api2.luma.com/discover/get-paginated-events?${params}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  return rateAwareJSON(url);
+}
+
+async function fetchEvents({ bbox, slugs, cursor, limit = 50 }) {
+  const list = Array.isArray(slugs) ? slugs : (slugs ? [slugs] : []);
+  // Empty or single category → single API call (cursor pagination supported).
+  if (list.length <= 1) {
+    return fetchOne({ bbox, slug: list[0] || "", cursor, limit });
+  }
+  // Multi-category → fetch each in parallel, merge + dedupe. No cursor pagination.
+  const results = await Promise.all(list.map(s => fetchOne({ bbox, slug: s, limit })));
+  const seen = new Set();
+  const entries = [];
+  for (const r of results) {
+    for (const e of (r.entries || [])) {
+      const id = e?.event?.api_id;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      entries.push(e);
+    }
+  }
+  return { entries, next_cursor: null, has_more: false };
 }
 
 // ── Filter / sort utilities ──────────────────────────────────
@@ -175,7 +299,8 @@ function App() {
   const [theme, setTheme] = useState("light");
   const [bbox, setBbox] = useState(DEFAULT_BBOX);
   const [mapCenter, setMapCenter] = useState({ lat: 32.92, lng: -96.98 });
-  const [slug, setSlug] = useState("");
+  const [slugs, setSlugs] = useState([]);
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -194,6 +319,17 @@ function App() {
   });
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [toast, setToast] = useState(null);
+  const [rateState, setRateState] = useState(rateSnapshot());
+
+  // Subscribe to rate-limit changes
+  useEffect(() => rateSubscribe(setRateState), []);
+
+  // Tick while we're sleeping toward a reset so the countdown updates.
+  useEffect(() => {
+    if (!rateState.waitingUntil) return;
+    const t = setInterval(() => setRateState(rateSnapshot()), 500);
+    return () => clearInterval(t);
+  }, [rateState.waitingUntil]);
 
   // Apply theme
   useEffect(() => {
@@ -213,12 +349,21 @@ function App() {
     try {
       const data = await fetchEvents({
         bbox: opts.bbox || bbox,
-        slug: opts.slug !== undefined ? opts.slug : slug,
+        slugs: opts.slugs !== undefined ? opts.slugs : slugs,
         cursor: opts.append ? nextCursor : null,
         limit: opts.limit || 50,
       });
       const newEntries = data.entries || [];
-      setEntries(prev => opts.append ? [...prev, ...newEntries] : newEntries);
+      setEntries(prev => {
+        const merged = opts.append ? [...prev, ...newEntries] : newEntries;
+        const seen = new Set();
+        return merged.filter(e => {
+          const id = e?.event?.api_id;
+          if (!id || seen.has(id)) return false;
+          seen.add(id);
+          return true;
+        });
+      });
       setNextCursor(data.next_cursor || null);
       setHasMore(!!data.has_more);
     } catch (err) {
@@ -227,7 +372,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [bbox, slug, nextCursor]);
+  }, [bbox, slugs, nextCursor]);
 
   // Auto-paginate up to AUTO_CAP (clamping the next request so we never overshoot),
   // or unbounded when fetchAll is on.
@@ -254,11 +399,15 @@ function App() {
   // eslint-disable-next-line
   }, []);
 
-  // Re-search on slug change
+  // Re-search on category change
   useEffect(() => {
-    search({ slug });
+    search({ slugs });
   // eslint-disable-next-line
-  }, [slug]);
+  }, [slugs]);
+
+  const toggleSlug = (s) => {
+    setSlugs(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+  };
 
   // Filtered + sorted
   const visible = useMemo(() => {
@@ -298,6 +447,7 @@ function App() {
       } else if (e.key === "Escape") {
         setAdvOpen(false);
         setSortMenuOpen(false);
+        setCategoryMenuOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -331,6 +481,12 @@ function App() {
         sortMenuOpen={sortMenuOpen}
         onToggleSortMenu={() => setSortMenuOpen(v => !v)}
         onSelectSort={id => { setSortId(id); setSortMenuOpen(false); }}
+        categories={CATEGORIES}
+        selectedSlugs={slugs}
+        categoryMenuOpen={categoryMenuOpen}
+        onToggleCategoryMenu={() => setCategoryMenuOpen(v => !v)}
+        onToggleSlug={toggleSlug}
+        onClearSlugs={() => setSlugs([])}
         onOpenAdvanced={() => setAdvOpen(true)}
         activeFilterCount={activeFilterCount}
         onSearch={() => search()}
@@ -340,11 +496,6 @@ function App() {
         pinnedCount={pinned.length}
         theme={theme}
         onToggleTheme={() => setTheme(t => t === "light" ? "dark" : "light")}
-      />
-      <CategoryStrip
-        categories={CATEGORIES}
-        active={slug}
-        onSelect={setSlug}
       />
       <div className="split" data-layout={layout}>
         <div className="results-pane">
@@ -357,6 +508,7 @@ function App() {
             cap={AUTO_CAP}
             fetchingAll={fetchAll}
             onFetchAll={() => setFetchAll(true)}
+            rateState={rateState}
           />
           {error && (
             <div className="state">
