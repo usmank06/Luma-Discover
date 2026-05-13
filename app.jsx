@@ -33,9 +33,6 @@ const DEFAULT_BBOX = {
   north: 33.21840836,
 };
 
-// Soft cap — auto-paginate up to this, then require user action ("Load more" / "Fetch all")
-const AUTO_CAP = 100;
-
 // ── Rate-aware fetch ─────────────────────────────────────────
 // Luma's response carries x-ratelimit-* headers. We track them so the client
 // can: (1) cap concurrency, (2) pre-emptively pause when remaining is low,
@@ -304,9 +301,6 @@ function App() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [nextCursor, setNextCursor] = useState(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [fetchAll, setFetchAll] = useState(false);
 
   const [filters, setFilters] = useState(FILTER_DEFAULTS);
   const [sortId, setSortId] = useState("soonest");
@@ -319,17 +313,6 @@ function App() {
   });
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [toast, setToast] = useState(null);
-  const [rateState, setRateState] = useState(rateSnapshot());
-
-  // Subscribe to rate-limit changes
-  useEffect(() => rateSubscribe(setRateState), []);
-
-  // Tick while we're sleeping toward a reset so the countdown updates.
-  useEffect(() => {
-    if (!rateState.waitingUntil) return;
-    const t = setInterval(() => setRateState(rateSnapshot()), 500);
-    return () => clearInterval(t);
-  }, [rateState.waitingUntil]);
 
   // Apply theme
   useEffect(() => {
@@ -341,57 +324,41 @@ function App() {
     localStorage.setItem("discover.pinned", JSON.stringify(pinned));
   }, [pinned]);
 
-  // Search
+  // Search: paginates through every page of results internally and commits state
+  // once at the end, so the UI shows a single "Loading" state instead of flickering
+  // as each page arrives.
   const search = useCallback(async (opts = {}) => {
     setLoading(true);
     setError(null);
-    if (!opts.append) setFetchAll(false);
     try {
-      const data = await fetchEvents({
-        bbox: opts.bbox || bbox,
-        slugs: opts.slugs !== undefined ? opts.slugs : slugs,
-        cursor: opts.append ? nextCursor : null,
-        limit: opts.limit || 50,
-      });
-      const newEntries = data.entries || [];
-      setEntries(prev => {
-        const merged = opts.append ? [...prev, ...newEntries] : newEntries;
-        const seen = new Set();
-        return merged.filter(e => {
-          const id = e?.event?.api_id;
-          if (!id || seen.has(id)) return false;
-          seen.add(id);
-          return true;
+      const seen = new Set();
+      const accumulated = [];
+      let cursor = null;
+
+      while (true) {
+        const data = await fetchEvents({
+          bbox: opts.bbox || bbox,
+          slugs: opts.slugs !== undefined ? opts.slugs : slugs,
+          cursor,
+          limit: 50,
         });
-      });
-      setNextCursor(data.next_cursor || null);
-      setHasMore(!!data.has_more);
+        for (const e of (data.entries || [])) {
+          const id = e?.event?.api_id;
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          accumulated.push(e);
+        }
+        cursor = data.next_cursor || null;
+        if (!cursor) break;
+      }
+
+      setEntries(accumulated);
     } catch (err) {
       setError(err.message || "Failed to fetch");
-      setFetchAll(false);
     } finally {
       setLoading(false);
     }
-  }, [bbox, slugs, nextCursor]);
-
-  // Auto-paginate up to AUTO_CAP (clamping the next request so we never overshoot),
-  // or unbounded when fetchAll is on.
-  useEffect(() => {
-    if (loading || error || !nextCursor) return;
-    if (fetchAll) {
-      search({ append: true });
-      return;
-    }
-    const remaining = AUTO_CAP - entries.length;
-    if (remaining > 0) {
-      search({ append: true, limit: Math.min(50, remaining) });
-    }
-  }, [loading, error, nextCursor, entries.length, fetchAll, search]);
-
-  // Stop fetch-all when there's nothing left
-  useEffect(() => {
-    if (fetchAll && !nextCursor && !loading) setFetchAll(false);
-  }, [fetchAll, nextCursor, loading]);
+  }, [bbox, slugs]);
 
   // Initial load
   useEffect(() => {
@@ -463,7 +430,7 @@ function App() {
     });
   };
 
-  const onMapMove = (newBbox, center) => {
+  const onSearchArea = (newBbox, center) => {
     setBbox(newBbox);
     setMapCenter(center);
     search({ bbox: newBbox });
@@ -477,10 +444,6 @@ function App() {
       <FilterBar
         keywords={filters.keywords}
         onKeywords={v => setFilters(f => ({ ...f, keywords: v }))}
-        sortId={sortId}
-        sortMenuOpen={sortMenuOpen}
-        onToggleSortMenu={() => setSortMenuOpen(v => !v)}
-        onSelectSort={id => { setSortId(id); setSortMenuOpen(false); }}
         categories={CATEGORIES}
         selectedSlugs={slugs}
         categoryMenuOpen={categoryMenuOpen}
@@ -503,12 +466,10 @@ function App() {
             count={visible.length}
             total={entries.length}
             loading={loading}
-            sortLabel={SORT_OPTIONS.find(s => s.id === sortId)?.label}
-            hasMore={hasMore}
-            cap={AUTO_CAP}
-            fetchingAll={fetchAll}
-            onFetchAll={() => setFetchAll(true)}
-            rateState={rateState}
+            sortId={sortId}
+            sortMenuOpen={sortMenuOpen}
+            onToggleSortMenu={() => setSortMenuOpen(v => !v)}
+            onSelectSort={id => { setSortId(id); setSortMenuOpen(false); }}
           />
           {error && (
             <div className="state">
@@ -547,23 +508,13 @@ function App() {
               onTogglePin={() => togglePin(entry.event.api_id)}
             />
           ))}
-          {hasMore && entries.length >= AUTO_CAP && !fetchAll && (
-            <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 16 }}>
-              <button className="btn" onClick={() => search({ append: true })} disabled={loading}>
-                {loading ? "Loading…" : "Load more"}
-              </button>
-              <button className="btn btn-ghost" onClick={() => setFetchAll(true)} disabled={loading}>
-                Fetch all
-              </button>
-            </div>
-          )}
         </div>
         {tweaks.showMap && (
           <div className="map-pane">
             <MapView
               entries={visible}
               bbox={bbox}
-              onChange={onMapMove}
+              onChange={onSearchArea}
               hoveredId={hoveredId}
               onHover={setHoveredId}
               loading={loading}

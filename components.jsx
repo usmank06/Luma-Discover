@@ -43,7 +43,7 @@ const SORT_OPTIONS = [
   { id: "alpha",    label: "Alphabetical" },
 ];
 
-function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort,
+function FilterBar({ keywords, onKeywords,
                      categories, selectedSlugs, categoryMenuOpen, onToggleCategoryMenu,
                      onToggleSlug, onClearSlugs,
                      onOpenAdvanced, activeFilterCount, onSearch, loading,
@@ -108,23 +108,6 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
         {activeFilterCount > 0 && <span className="chip-count">{activeFilterCount}</span>}
       </button>
 
-      <div className="menu-rel">
-        <button className="chip" onClick={onToggleSortMenu}>
-          Sort: {SORT_OPTIONS.find(s => s.id === sortId)?.label.replace(" first", "")}
-          <Icon name="chevdown" size={13} />
-        </button>
-        {sortMenuOpen && (
-          <div className="menu" onMouseLeave={() => onToggleSortMenu()}>
-            {SORT_OPTIONS.map(o => (
-              <button key={o.id} data-active={o.id === sortId} onClick={() => onSelectSort(o.id)}>
-                {o.label}
-                {o.id === sortId && <span className="check"><Icon name="check" size={13} /></span>}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
       {pinnedCount > 0 && (
         <button className="chip" data-active={showPinnedOnly} onClick={onTogglePinned}>
           <Icon name="bookmark" size={13} />
@@ -134,11 +117,6 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
       )}
 
       <div style={{ flex: 1 }} />
-
-      <button className="btn" onClick={onSearch} disabled={loading}>
-        <Icon name="refresh" size={13} />
-        {loading ? "Searching…" : "Refresh"}
-      </button>
 
       <button className="btn btn-ghost btn-icon" onClick={onToggleTheme} title="Toggle theme (T)">
         <Icon name={theme === "light" ? "moon" : "sun"} size={15} />
@@ -151,47 +129,36 @@ function FilterBar({ keywords, onKeywords, sortId, sortMenuOpen, onToggleSortMen
 }
 
 // ── Results header ───────────────────────────────────────────
-function ResultsHeader({ count, total, loading, sortLabel, hasMore, cap, fetchingAll, onFetchAll, rateState }) {
-  const capped = hasMore && total >= (cap || Infinity);
-  const headline = capped ? `${total}+ events` : `${count} ${count === 1 ? "event" : "events"}`;
+function ResultsHeader({ count, total, loading, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort }) {
+  const headline = `${count} ${count === 1 ? "event" : "events"}`;
   const filteredOut = total - count;
-
-  const now = Date.now();
-  const waiting = rateState && rateState.waitingUntil > now;
-  const waitS = waiting ? Math.max(1, Math.ceil((rateState.waitingUntil - now) / 1000)) : 0;
-  const lowBudget = rateState && rateState.limit > 0 && rateState.remaining <= 5 && !waiting;
+  const sortLabel = SORT_OPTIONS.find(s => s.id === sortId)?.label || "";
 
   return (
     <div className="results-header">
       <h2 className="results-count">
         {headline}
-        {!capped && filteredOut > 0 && <em> · {filteredOut} filtered</em>}
+        {filteredOut > 0 && <em> · {filteredOut} filtered</em>}
       </h2>
       <div className="results-meta">
-        {hasMore && (
-          <button
-            className="btn btn-sm"
-            onClick={onFetchAll}
-            disabled={fetchingAll || loading || waiting}
-            title="Page through every available event"
-          >
-            {fetchingAll ? "Fetching all…" : "Fetch all"}
+        {loading && <span className="dot-pulse">Loading</span>}
+        {loading && <span className="meta-sep">·</span>}
+        <div className="menu-rel">
+          <button className="chip chip-ghost" onClick={onToggleSortMenu}>
+            {sortLabel}
+            <Icon name="chevdown" size={13} />
           </button>
-        )}
-        {waiting && (
-          <span className="rate-pill" title="Rate-limited by the upstream API; we'll resume automatically">
-            <Icon name="alert" size={12} />
-            Rate-limited · resuming in {waitS}s
-          </span>
-        )}
-        {!waiting && lowBudget && (
-          <span className="rate-pill rate-pill-soft" title={`${rateState.remaining}/${rateState.limit} requests left in this window`}>
-            Slowing down · {rateState.remaining} left
-          </span>
-        )}
-        {loading && !waiting && <span className="dot-pulse">Updating…</span>}
-        <span style={{ opacity: 0.6 }}>·</span>
-        <span>{sortLabel}</span>
+          {sortMenuOpen && (
+            <div className="menu" onMouseLeave={onToggleSortMenu}>
+              {SORT_OPTIONS.map(o => (
+                <button key={o.id} data-active={o.id === sortId} onClick={() => onSelectSort(o.id)}>
+                  {o.label}
+                  {o.id === sortId && <span className="check"><Icon name="check" size={13} /></span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -302,6 +269,8 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
   const mapRef = useR(null);
   const markersRef = useR({});
   const moveTimer = useR(null);
+  const readyRef = useR(false);
+  const [pendingArea, setPendingArea] = useS(false);
 
   // Init map once
   useE(() => {
@@ -309,16 +278,20 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     const map = L.map(containerRef.current, {
       zoomControl: false,
       attributionControl: true,
+      minZoom: 5,   // prevent zooming out beyond a regional view
+      maxZoom: 18,
     }).fitBounds([
       [bbox.south, bbox.west],
       [bbox.north, bbox.east],
     ], { padding: [20, 20] });
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
+      minZoom: 5,
       maxZoom: 18,
       attribution: '© OpenStreetMap, © CARTO',
     }).addTo(map);
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png", {
+      minZoom: 5,
       maxZoom: 18,
       pane: "shadowPane",
     }).addTo(map);
@@ -328,21 +301,17 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     mapRef.current = map;
 
     const handleMove = () => {
+      // Ignore the initial fitBounds-triggered moveend
+      if (!readyRef.current) return;
       clearTimeout(moveTimer.current);
-      moveTimer.current = setTimeout(() => {
-        const b = map.getBounds();
-        const newBbox = {
-          west:  b.getWest(),
-          east:  b.getEast(),
-          south: b.getSouth(),
-          north: b.getNorth(),
-        };
-        const c = map.getCenter();
-        onChange(newBbox, { lat: c.lat, lng: c.lng });
-      }, 250);
+      moveTimer.current = setTimeout(() => setPendingArea(true), 250);
     };
     map.on("moveend", handleMove);
     map.on("zoomend", handleMove);
+
+    // Mark ready after the first paint settles so the initial fit doesn't
+    // trigger the "Search this area" button.
+    setTimeout(() => { readyRef.current = true; }, 500);
 
     return () => {
       map.off("moveend", handleMove);
@@ -350,6 +319,24 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     };
   // eslint-disable-next-line
   }, []);
+
+  // When the parent commits a new bbox (after a search), hide the pending button.
+  useE(() => { setPendingArea(false); }, [bbox]);
+
+  const searchThisArea = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    const b = map.getBounds();
+    const newBbox = {
+      west:  b.getWest(),
+      east:  b.getEast(),
+      south: b.getSouth(),
+      north: b.getNorth(),
+    };
+    const c = map.getCenter();
+    setPendingArea(false);
+    onChange(newBbox, { lat: c.lat, lng: c.lng });
+  };
 
   // Update markers when entries change
   useE(() => {
@@ -400,7 +387,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
         .addTo(map)
         .bindTooltip(tipHtml, {
           direction: "top",
-          offset: [0, -28],
+          offset: [0, -12],
           opacity: 1,
           className: "map-tip-tooltip",
           sticky: false,
@@ -428,6 +415,12 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
   return (
     <>
       <div ref={containerRef} id="map"></div>
+      {pendingArea && (
+        <button className="map-search-area" onClick={searchThisArea} disabled={loading}>
+          <Icon name="search" size={13} />
+          {loading ? "Searching…" : "Search this area"}
+        </button>
+      )}
       <div className="map-controls">
         <button className="map-btn" title="Find my location" onClick={() => {
           if (!navigator.geolocation) return;
