@@ -497,24 +497,33 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
       const marker = L.marker([c.latitude, c.longitude], { icon })
         .bindTooltip(tipHtml, {
           direction: "top",
-          offset: [0, -12],
+          // Sit a little higher on touch so the preview clears the pin.
+          offset: [0, isTouch ? -22 : -12],
           opacity: 1,
           className: "map-tip-tooltip",
           sticky: false,
+          // On touch the preview itself is the tap target that opens the event.
+          interactive: isTouch,
         });
       const openEvent = () => window.open(`https://lu.ma/${entry.event.url}`, "_blank");
       marker.on("mouseover", () => onHover(id));
       marker.on("mouseout", () => onHover(null));
       marker.on("click", () => {
         if (!isTouch) { openEvent(); return; }
-        // Touch: first tap previews this pin, a repeat tap opens it.
-        if (openTipRef.current === id) { openEvent(); return; }
-        if (openTipRef.current && markersRef.current[openTipRef.current]) {
+        // Touch: tapping a pin only previews it; tapping the preview opens it.
+        if (openTipRef.current && openTipRef.current !== id &&
+            markersRef.current[openTipRef.current]) {
           markersRef.current[openTipRef.current].closeTooltip();
         }
         openTipRef.current = id;
         onHover(id);
         marker.openTooltip();
+        const tip = marker.getTooltip();
+        const tipEl = tip && tip.getElement();
+        if (tipEl) {
+          tipEl.classList.add("map-tip-clickable");
+          tipEl.onclick = (ev) => { ev.stopPropagation(); openEvent(); };
+        }
       });
       cluster.addLayer(marker);
       markersRef.current[id] = marker;
