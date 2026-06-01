@@ -317,6 +317,9 @@ function App() {
   const [toast, setToast] = useState(null);
   // Mobile-only: which pane is in focus. Desktop ignores this (shows both).
   const [mobileView, setMobileView] = useState("list");
+  // List pagination: everything is fetched up front, but shown 25 at a time.
+  const [page, setPage] = useState(1);
+  const resultsRef = useRef(null);
 
   // Apply theme
   useEffect(() => {
@@ -387,6 +390,25 @@ function App() {
     arr = sortEvents(arr, sortId, mapCenter);
     return arr;
   }, [entries, filters, sortId, mapCenter, showPinnedOnly, pinned]);
+
+  // ── List pagination (client-side, 25 per page) ──
+  const PAGE_SIZE = 25;
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * PAGE_SIZE;
+  const pageItems = visible.slice(pageStart, pageStart + PAGE_SIZE);
+
+  // Jump back to the first page whenever the result set changes (new search,
+  // filter, sort, or Saved-only toggle) so we never strand the user on a dead
+  // page. Pinning alone is excluded — the page clamp handles any shrinkage and
+  // it avoids bouncing the user to page 1 just for saving an event.
+  useEffect(() => { setPage(1); }, [entries, filters, sortId, showPinnedOnly]);
+
+  const goToPage = useCallback((n) => {
+    setPage(n);
+    // Scroll the list (and the window on mobile) back to the top of the results.
+    resultsRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
   // Active filter count (for badge on Filters button)
   const activeFilterCount = useMemo(() => {
@@ -465,7 +487,7 @@ function App() {
         onToggleTheme={() => setTheme(t => t === "light" ? "dark" : "light")}
       />
       <div className="split" data-layout={layout} data-mobile-view={mobileView}>
-        <div className="results-pane">
+        <div className="results-pane" ref={resultsRef}>
           <ResultsHeader
             count={visible.length}
             total={entries.length}
@@ -474,6 +496,8 @@ function App() {
             sortMenuOpen={sortMenuOpen}
             onToggleSortMenu={() => setSortMenuOpen(v => !v)}
             onSelectSort={id => { setSortId(id); setSortMenuOpen(false); }}
+            rangeStart={visible.length ? pageStart + 1 : 0}
+            rangeEnd={pageStart + pageItems.length}
           />
           {error && (
             <div className="state">
@@ -500,7 +524,7 @@ function App() {
               <div>Pan the map or change category to find events.</div>
             </div>
           )}
-          {visible.map(entry => (
+          {pageItems.map(entry => (
             <EventCard
               key={entry.event.api_id}
               entry={entry}
@@ -512,6 +536,9 @@ function App() {
               onTogglePin={() => togglePin(entry.event.api_id)}
             />
           ))}
+          {!loading && !error && (
+            <Pagination page={safePage} totalPages={totalPages} onPage={goToPage} />
+          )}
         </div>
         {tweaks.showMap && (
           <div className="map-pane">

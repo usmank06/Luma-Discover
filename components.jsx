@@ -12,6 +12,8 @@ function Icon({ name, size = 16, ...rest }) {
     case "search":  return <svg {...props}><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
     case "sliders": return <svg {...props}><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h14M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="18" cy="18" r="2" fill="currentColor"/></svg>;
     case "chevdown":return <svg {...props}><path d="m6 9 6 6 6-6"/></svg>;
+    case "chevleft": return <svg {...props}><path d="m15 18-6-6 6-6"/></svg>;
+    case "chevright":return <svg {...props}><path d="m9 18 6-6-6-6"/></svg>;
     case "check":   return <svg {...props}><path d="m5 12 5 5 9-11"/></svg>;
     case "sun":     return <svg {...props}><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M5 12H3M21 12h-2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></svg>;
     case "moon":    return <svg {...props}><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/></svg>;
@@ -136,17 +138,24 @@ function FilterBar({ keywords, onKeywords,
 }
 
 // ── Results header ───────────────────────────────────────────
-function ResultsHeader({ count, total, loading, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort }) {
+function ResultsHeader({ count, total, loading, sortId, sortMenuOpen, onToggleSortMenu, onSelectSort, rangeStart, rangeEnd }) {
   const headline = `${count} ${count === 1 ? "event" : "events"}`;
   const filteredOut = total - count;
   const sortLabel = SORT_OPTIONS.find(s => s.id === sortId)?.label || "";
+  // Only surface the range when the list is actually paginated.
+  const paginated = count > 0 && (rangeStart > 1 || rangeEnd < count);
 
   return (
     <div className="results-header">
-      <h2 className="results-count">
-        {headline}
-        {filteredOut > 0 && <em> · {filteredOut} filtered</em>}
-      </h2>
+      <div className="results-headline">
+        <h2 className="results-count">
+          {headline}
+          {filteredOut > 0 && <em> · {filteredOut} filtered</em>}
+        </h2>
+        {paginated && (
+          <div className="results-range">Showing {rangeStart}–{rangeEnd}</div>
+        )}
+      </div>
       <div className="results-meta">
         {loading && <span className="dot-pulse">Loading</span>}
         {loading && <span className="meta-sep">·</span>}
@@ -168,6 +177,48 @@ function ResultsHeader({ count, total, loading, sortId, sortMenuOpen, onToggleSo
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Pagination ───────────────────────────────────────────────
+// Builds a compact page list: 1 … 4 5 6 … 20 (current ± 1 neighbours).
+function buildPageList(page, total) {
+  const nums = new Set([1, total, page, page - 1, page + 1]);
+  const sorted = [...nums].filter(n => n >= 1 && n <= total).sort((a, b) => a - b);
+  const out = [];
+  let prev = 0;
+  for (const n of sorted) {
+    if (n - prev > 1) out.push("…");
+    out.push(n);
+    prev = n;
+  }
+  return out;
+}
+
+function Pagination({ page, totalPages, onPage }) {
+  if (totalPages <= 1) return null;
+  const items = buildPageList(page, totalPages);
+  return (
+    <nav className="pagination" aria-label="Pagination">
+      <button className="page-btn page-nav" disabled={page <= 1}
+        onClick={() => onPage(page - 1)} aria-label="Previous page">
+        <Icon name="chevleft" size={15} />
+        <span className="page-nav-label">Prev</span>
+      </button>
+      <div className="page-nums">
+        {items.map((it, i) => it === "…"
+          ? <span key={"e" + i} className="page-ellipsis">…</span>
+          : <button key={it} className="page-btn" data-active={it === page}
+              aria-current={it === page ? "page" : undefined}
+              onClick={() => onPage(it)}>{it}</button>
+        )}
+      </div>
+      <button className="page-btn page-nav" disabled={page >= totalPages}
+        onClick={() => onPage(page + 1)} aria-label="Next page">
+        <span className="page-nav-label">Next</span>
+        <Icon name="chevright" size={15} />
+      </button>
+    </nav>
   );
 }
 
@@ -683,6 +734,6 @@ function DiscoverTweaks({ tweaks, setTweak, theme, setTheme }) {
   );
 }
 
-Object.assign(window, { Icon, FilterBar, ResultsHeader,
+Object.assign(window, { Icon, FilterBar, ResultsHeader, Pagination,
   EventCard, SkeletonList, MapView, AdvancedFilters, DiscoverTweaks,
   SORT_OPTIONS });
