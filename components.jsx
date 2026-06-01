@@ -23,6 +23,7 @@ function Icon({ name, size = 16, ...rest }) {
     case "clock":   return <svg {...props}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>;
     case "users":   return <svg {...props}><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M21.5 18a4.5 4.5 0 0 0-5-4.4"/></svg>;
     case "globe":   return <svg {...props}><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>;
+    case "list":    return <svg {...props}><path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none"/></svg>;
     case "external":return <svg {...props}><path d="M14 4h6v6M20 4l-9 9M19 13v7H4V5h7"/></svg>;
     case "alert":   return <svg {...props}><path d="M12 3 2 21h20zM12 10v5M12 18h.01"/></svg>;
     case "refresh": return <svg {...props}><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5"/></svg>;
@@ -57,74 +58,79 @@ function FilterBar({ keywords, onKeywords,
       : `${selected.length} selected`;
   return (
     <div className="filterbar">
-      <div className="brand" data-tooltip="Not affiliated with Luma">Discover</div>
-      <div className="search-wrap">
-        <Icon name="search" size={15} />
-        <input
-          className="search-input"
-          type="text"
-          value={keywords}
-          onChange={e => onKeywords(e.target.value)}
-          placeholder="Search events, hosts, keywords…"
-          onKeyDown={e => { if (e.key === "Enter") onSearch(); }}
-        />
-        {!keywords && <span className="search-kbd">/</span>}
+      <div className="fb-row fb-row-top">
+        <div className="brand" data-tooltip="Not affiliated with Luma">Discover</div>
+        <div className="search-wrap">
+          <Icon name="search" size={15} />
+          <input
+            className="search-input"
+            type="text"
+            value={keywords}
+            onChange={e => onKeywords(e.target.value)}
+            placeholder="Search events, hosts, keywords…"
+            onKeyDown={e => { if (e.key === "Enter") onSearch(); }}
+          />
+          {!keywords && <span className="search-kbd">/</span>}
+        </div>
+        <div className="fb-actions">
+          <button className="btn btn-ghost btn-icon" onClick={onToggleTheme} title="Toggle theme (T)">
+            <Icon name={theme === "light" ? "moon" : "sun"} size={15} />
+          </button>
+          <a className="btn btn-ghost btn-icon" href="https://github.com/usmank06/Luma-Discover" target="_blank" rel="noopener noreferrer" title="View on GitHub">
+            <Icon name="github" size={15} />
+          </a>
+        </div>
       </div>
 
-      <div className="menu-rel">
-        <button className="chip" onClick={onToggleCategoryMenu}>
-          Category: {categoryLabel}
-          {selected.length > 0 && <span className="chip-count">{selected.length}</span>}
-          <Icon name="chevdown" size={13} />
-        </button>
-        {categoryMenuOpen && (
-          <div className="menu menu-multi" onMouseLeave={onToggleCategoryMenu}>
-            <button data-active={selected.length === 0} onClick={onClearSlugs}>
-              <span className="menu-row-main">
-                <span className="cat-chip-emoji">✦</span>
-                All
-              </span>
-              {selected.length === 0 && <span className="check"><Icon name="check" size={13} /></span>}
+      <div className="fb-row fb-row-controls">
+        <div className="fb-chips">
+          <div className="menu-rel">
+            <button className="chip" onClick={onToggleCategoryMenu}>
+              <span className="chip-label">Category: {categoryLabel}</span>
+              {selected.length > 0 && <span className="chip-count">{selected.length}</span>}
+              <Icon name="chevdown" size={13} />
             </button>
-            <div className="menu-sep" />
-            {categories.filter(c => c.slug).map(c => {
-              const on = selected.includes(c.slug);
-              return (
-                <button key={c.slug} data-active={on} onClick={() => onToggleSlug(c.slug)}>
+            {categoryMenuOpen && (
+              <div className="menu menu-multi" onMouseLeave={onToggleCategoryMenu}>
+                <button data-active={selected.length === 0} onClick={onClearSlugs}>
                   <span className="menu-row-main">
-                    <span className="cat-chip-emoji">{c.emoji}</span>
-                    {c.label}
+                    <span className="cat-chip-emoji">✦</span>
+                    All
                   </span>
-                  {on && <span className="check"><Icon name="check" size={13} /></span>}
+                  {selected.length === 0 && <span className="check"><Icon name="check" size={13} /></span>}
                 </button>
-              );
-            })}
+                <div className="menu-sep" />
+                {categories.filter(c => c.slug).map(c => {
+                  const on = selected.includes(c.slug);
+                  return (
+                    <button key={c.slug} data-active={on} onClick={() => onToggleSlug(c.slug)}>
+                      <span className="menu-row-main">
+                        <span className="cat-chip-emoji">{c.emoji}</span>
+                        {c.label}
+                      </span>
+                      {on && <span className="check"><Icon name="check" size={13} /></span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        )}
+
+          <button className="chip" onClick={onOpenAdvanced} title="Advanced filters (F)">
+            <Icon name="sliders" size={14} />
+            Filters
+            {activeFilterCount > 0 && <span className="chip-count">{activeFilterCount}</span>}
+          </button>
+
+          {pinnedCount > 0 && (
+            <button className="chip" data-active={showPinnedOnly} onClick={onTogglePinned}>
+              <Icon name="bookmark" size={13} />
+              Saved
+              <span className="chip-count">{pinnedCount}</span>
+            </button>
+          )}
+        </div>
       </div>
-
-      <button className="chip" onClick={onOpenAdvanced} title="Advanced filters (F)">
-        <Icon name="sliders" size={14} />
-        Filters
-        {activeFilterCount > 0 && <span className="chip-count">{activeFilterCount}</span>}
-      </button>
-
-      {pinnedCount > 0 && (
-        <button className="chip" data-active={showPinnedOnly} onClick={onTogglePinned}>
-          <Icon name="bookmark" size={13} />
-          Saved
-          <span className="chip-count">{pinnedCount}</span>
-        </button>
-      )}
-
-      <div style={{ flex: 1 }} />
-
-      <button className="btn btn-ghost btn-icon" onClick={onToggleTheme} title="Toggle theme (T)">
-        <Icon name={theme === "light" ? "moon" : "sun"} size={15} />
-      </button>
-      <a className="btn btn-ghost btn-icon" href="https://github.com/usmank06/Luma-Discover" target="_blank" rel="noopener noreferrer" title="View on GitHub">
-        <Icon name="github" size={15} />
-      </a>
     </div>
   );
 }
@@ -271,7 +277,18 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
   const markersRef = useR({});
   const moveTimer = useR(null);
   const readyRef = useR(false);
+  const fittedRef = useR(false);
+  const openTipRef = useR(null);   // id of the marker whose preview is open (touch)
   const [pendingArea, setPendingArea] = useS(false);
+
+  // Touch devices have no hover, so a single tap can't both preview AND open.
+  // On those, the first tap shows the preview and a second tap follows through.
+  const isTouch = typeof window !== "undefined" &&
+    window.matchMedia && window.matchMedia("(hover: none)").matches;
+
+  const fitToBbox = (map, b) => {
+    map.fitBounds([[b.south, b.west], [b.north, b.east]], { padding: [20, 20] });
+  };
 
   // Init map once
   useE(() => {
@@ -281,10 +298,16 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
       attributionControl: true,
       minZoom: 5,   // prevent zooming out beyond a regional view
       maxZoom: 18,
-    }).fitBounds([
-      [bbox.south, bbox.west],
-      [bbox.north, bbox.east],
-    ], { padding: [20, 20] });
+    });
+    // On mobile the map can be initialised while its pane is hidden (list view),
+    // so the container has no size and fitBounds would be meaningless. Only fit
+    // now if we have real dimensions; otherwise defer to the resize effect.
+    if (containerRef.current.clientHeight > 0) {
+      fitToBbox(map, bbox);
+      fittedRef.current = true;
+    } else {
+      map.setView([(bbox.north + bbox.south) / 2, (bbox.east + bbox.west) / 2], 9);
+    }
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
       minZoom: 5,
@@ -310,6 +333,17 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     map.on("moveend", handleMove);
     map.on("zoomend", handleMove);
 
+    // Tapping the empty map dismisses an open preview (touch flow).
+    const handleMapClick = () => {
+      const openId = openTipRef.current;
+      if (openId && markersRef.current[openId]) {
+        markersRef.current[openId].closeTooltip();
+      }
+      openTipRef.current = null;
+      onHover(null);
+    };
+    map.on("click", handleMapClick);
+
     // Mark ready after the first paint settles so the initial fit doesn't
     // trigger the "Search this area" button.
     setTimeout(() => { readyRef.current = true; }, 500);
@@ -317,6 +351,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     return () => {
       map.off("moveend", handleMove);
       map.off("zoomend", handleMove);
+      map.off("click", handleMapClick);
     };
   // eslint-disable-next-line
   }, []);
@@ -347,6 +382,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     // Remove old markers
     Object.values(markersRef.current).forEach(m => map.removeLayer(m));
     markersRef.current = {};
+    openTipRef.current = null;
 
     const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -393,9 +429,20 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
           className: "map-tip-tooltip",
           sticky: false,
         });
+      const openEvent = () => window.open(`https://lu.ma/${entry.event.url}`, "_blank");
       marker.on("mouseover", () => onHover(id));
       marker.on("mouseout", () => onHover(null));
-      marker.on("click", () => window.open(`https://lu.ma/${entry.event.url}`, "_blank"));
+      marker.on("click", () => {
+        if (!isTouch) { openEvent(); return; }
+        // Touch: first tap previews this pin, a repeat tap opens it.
+        if (openTipRef.current === id) { openEvent(); return; }
+        if (openTipRef.current && markersRef.current[openTipRef.current]) {
+          markersRef.current[openTipRef.current].closeTooltip();
+        }
+        openTipRef.current = id;
+        onHover(id);
+        marker.openTooltip();
+      });
       markersRef.current[id] = marker;
     });
   }, [entries]);
@@ -408,9 +455,18 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     });
   }, [hoveredId]);
 
-  // Resize when layout changes
+  // Resize when layout changes (e.g. toggling between mobile list/map views).
+  // Once the pane actually has size, run the deferred initial fit.
   useE(() => {
-    setTimeout(() => mapRef.current?.invalidateSize(), 200);
+    setTimeout(() => {
+      const map = mapRef.current;
+      if (!map) return;
+      map.invalidateSize();
+      if (!fittedRef.current && containerRef.current?.clientHeight > 0) {
+        fitToBbox(map, bbox);
+        fittedRef.current = true;
+      }
+    }, 200);
   });
 
   return (

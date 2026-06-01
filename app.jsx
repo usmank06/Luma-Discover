@@ -315,6 +315,8 @@ function App() {
   });
   const [showPinnedOnly, setShowPinnedOnly] = useState(false);
   const [toast, setToast] = useState(null);
+  // Mobile-only: which pane is in focus. Desktop ignores this (shows both).
+  const [mobileView, setMobileView] = useState("list");
 
   // Apply theme
   useEffect(() => {
@@ -462,7 +464,7 @@ function App() {
         theme={theme}
         onToggleTheme={() => setTheme(t => t === "light" ? "dark" : "light")}
       />
-      <div className="split" data-layout={layout}>
+      <div className="split" data-layout={layout} data-mobile-view={mobileView}>
         <div className="results-pane">
           <ResultsHeader
             count={visible.length}
@@ -525,6 +527,20 @@ function App() {
           </div>
         )}
       </div>
+
+      {tweaks.showMap && (
+        <button
+          className="view-toggle"
+          data-view={mobileView}
+          onClick={() => setMobileView(v => (v === "list" ? "map" : "list"))}
+        >
+          <Icon name={mobileView === "list" ? "map" : "list"} size={16} />
+          {mobileView === "list" ? "Map" : "List"}
+          {mobileView === "list" && visible.length > 0 && (
+            <span className="view-toggle-count">{visible.length}</span>
+          )}
+        </button>
+      )}
 
       {advOpen && (
         <AdvancedFilters

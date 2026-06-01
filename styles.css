@@ -167,6 +167,21 @@ html[data-theme="dark"] .app-bg {
   position: sticky; top: var(--header-h); z-index: 40;
   flex-wrap: wrap;
 }
+
+/* Filter-bar rows: flattened into a single flex row on desktop (via
+   display:contents), restacked into two rows on mobile (see media query). */
+.fb-row { display: contents; }
+.fb-chips {
+  display: inline-flex; align-items: center; gap: 10px;
+  order: 3; min-width: 0;
+}
+.fb-actions {
+  display: inline-flex; align-items: center; gap: 6px;
+  order: 4; margin-left: auto;
+}
+.filterbar .brand { order: 1; }
+.filterbar .search-wrap { order: 2; }
+.chip-label { white-space: nowrap; }
 .brand {
   position: relative;
   font-family: var(--font-display);
@@ -880,12 +895,99 @@ html[data-theme="dark"] .twk-panel .twk-field {
   animation: slideUp .2s ease;
 }
 
-/* Scrollable category strip on small screens */
+/* Floating list/map switch — mobile only (hidden on desktop) */
+.view-toggle { display: none; }
+@keyframes fabIn { from { opacity: 0 } to { opacity: 1 } }
+
+/* ── Mobile: list and map become full-screen, swapped via a floating toggle ── */
 @media (max-width: 900px) {
-  .split { grid-template-columns: 1fr; height: auto; }
-  .map-pane { height: 360px; position: relative; border: 0; border-top: 1px solid var(--border); }
-  .results-pane { padding: 14px 16px 80px; }
-  .filterbar { padding: 10px 16px; }
+  /* Use the dynamic viewport so the map fills the screen cleanly beneath
+     the mobile browser's chrome instead of hiding under it. */
+  html, body, #root { height: 100dvh; }
+  #root { min-height: 100dvh; }
+
+  /* Filter bar restacks into two tidy rows */
+  .filterbar {
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+  .fb-row { display: flex; order: 0; }
+  .fb-row-top { align-items: center; gap: 10px; }
+  .filterbar .brand { order: 0; margin-right: 0; font-size: 18px; }
+  .filterbar .search-wrap {
+    order: 0; flex: 1 1 auto; min-width: 0; max-width: none;
+  }
+  .fb-actions { order: 0; margin-left: 0; gap: 2px; flex: 0 0 auto; }
+  .fb-chips { order: 0; flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .fb-chips .chip { flex: 0 0 auto; }
+
+  /* Category dropdown anchors left so it never spills off-screen */
+  .menu-multi { left: 0; right: auto; max-width: calc(100vw - 28px); }
+
+  /* One pane at a time, each filling the viewport below the filter bar */
+  .split {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .split .results-pane,
+  .split[data-layout="map-left"] .results-pane { order: 0; }
+  .split .map-pane,
+  .split[data-layout="map-left"] .map-pane {
+    order: 0;
+    position: relative;
+    height: 100%;
+    border: 0;
+  }
+  .split[data-mobile-view="list"] .map-pane { display: none; }
+  .split:not([data-layout="hide-map"])[data-mobile-view="map"] .results-pane { display: none; }
+
+  .results-pane { padding: 14px 14px 100px; }
+
+  /* Touch devices have no hover — keep the map controls visible */
+  .map-controls { opacity: 1; transform: none; pointer-events: auto; }
+  .map-search-area { top: 12px; }
+
+  /* Floating list ⇄ map switch.
+     Centered with margin-auto (NOT transform): a persistent transform on a
+     fixed element creates its own compositor layer that Leaflet's transformed
+     map layer can intermittently paint over. Plain z-index ordering is stable. */
+  .view-toggle {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    position: fixed;
+    left: 0; right: 0; bottom: 18px;
+    margin-inline: auto;
+    width: max-content; max-width: calc(100vw - 32px);
+    height: 46px; padding: 0 22px;
+    background: var(--text); color: var(--bg);
+    border: 0; border-radius: var(--r-pill);
+    font-family: var(--font-display);
+    font-size: 14px; font-weight: 600; letter-spacing: -0.01em;
+    box-shadow: var(--shadow-pop);
+    /* Above Leaflet's panes/controls (which reach z-index ~1000) */
+    z-index: 1200;
+    cursor: pointer;
+    transition: background .14s ease, box-shadow .14s ease, opacity .12s ease;
+    animation: fabIn .24s cubic-bezier(.2,.8,.2,1);
+  }
+  .view-toggle:active { opacity: .9; box-shadow: var(--shadow-2); }
+  .view-toggle-count {
+    display: inline-grid; place-items: center;
+    min-width: 18px; height: 18px; padding: 0 5px;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+    background: color-mix(in oklab, var(--bg) 28%, transparent);
+    border-radius: var(--r-pill);
+  }
+
+  /* Keep the toast clear of the floating toggle */
+  .toast { bottom: 78px; }
+}
+
+/* On the narrowest screens, drop the wordmark so search gets full width */
+@media (max-width: 460px) {
+  .filterbar .brand { display: none; }
 }
 
 /* Keyboard shortcut help */
