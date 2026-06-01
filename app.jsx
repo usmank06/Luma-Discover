@@ -545,6 +545,7 @@ function App() {
       {advOpen && (
         <AdvancedFilters
           filters={filters}
+          defaults={FILTER_DEFAULTS}
           onChange={setFilters}
           onClose={() => setAdvOpen(false)}
           onReset={() => setFilters(FILTER_DEFAULTS)}

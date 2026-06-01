@@ -274,6 +274,7 @@ function SkeletonList({ count = 3 }) {
 function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }) {
   const containerRef = useR(null);
   const mapRef = useR(null);
+  const clusterRef = useR(null);
   const markersRef = useR({});
   const moveTimer = useR(null);
   const readyRef = useR(false);
@@ -321,6 +322,27 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     }).addTo(map);
 
     L.control.zoom({ position: "bottomright" }).addTo(map);
+
+    // Group nearby pins so dense result sets stay fast. Only markers in view are
+    // rendered; clicking a cluster zooms to its bounds.
+    const cluster = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      chunkedLoading: true,
+      maxClusterRadius: 55,
+      spiderfyOnMaxZoom: true,
+      iconCreateFunction: (c) => {
+        const n = c.getChildCount();
+        const size = n < 10 ? 34 : n < 50 ? 40 : 48;
+        return L.divIcon({
+          className: "",
+          html: `<div class="map-cluster" data-size="${n < 10 ? "s" : n < 50 ? "m" : "l"}"><span>${n}</span></div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+      },
+    });
+    map.addLayer(cluster);
+    clusterRef.current = cluster;
 
     mapRef.current = map;
 
@@ -377,10 +399,11 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
   // Update markers when entries change
   useE(() => {
     const map = mapRef.current;
-    if (!map) return;
+    const cluster = clusterRef.current;
+    if (!map || !cluster) return;
 
-    // Remove old markers
-    Object.values(markersRef.current).forEach(m => map.removeLayer(m));
+    // Drop old markers (clearing the cluster removes them all at once)
+    cluster.clearLayers();
     markersRef.current = {};
     openTipRef.current = null;
 
@@ -421,7 +444,6 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
         </div>`;
 
       const marker = L.marker([c.latitude, c.longitude], { icon })
-        .addTo(map)
         .bindTooltip(tipHtml, {
           direction: "top",
           offset: [0, -12],
@@ -443,6 +465,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
         onHover(id);
         marker.openTooltip();
       });
+      cluster.addLayer(marker);
       markersRef.current[id] = marker;
     });
   }, [entries]);
@@ -493,7 +516,7 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
 }
 
 // ── Advanced filters sheet ───────────────────────────────────
-function AdvancedFilters({ filters, onChange, onClose, onReset }) {
+function AdvancedFilters({ filters, defaults, onChange, onClose, onReset }) {
   const [local, setLocal] = useS(filters);
   const set = (k, v) => setLocal(f => ({ ...f, [k]: v }));
 
@@ -595,7 +618,7 @@ function AdvancedFilters({ filters, onChange, onClose, onReset }) {
         </div>
         <div className="adv-foot">
           <div className="left">
-            <button className="btn btn-ghost btn-sm" onClick={() => { setLocal(FILTER_DEFAULTS); }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setLocal(defaults)}>
               Reset
             </button>
           </div>
@@ -662,4 +685,4 @@ function DiscoverTweaks({ tweaks, setTweak, theme, setTheme }) {
 
 Object.assign(window, { Icon, FilterBar, ResultsHeader,
   EventCard, SkeletonList, MapView, AdvancedFilters, DiscoverTweaks,
-  SORT_OPTIONS, FILTER_DEFAULTS });
+  SORT_OPTIONS });
