@@ -591,11 +591,6 @@ html[data-theme="dark"] .tag.info { color: oklch(80% 0.06 230); }
 /* ── Map overlay ────────────────────────────────────────────── */
 .map-pane { position: relative; }
 #map { width: 100%; height: 100%; background: var(--bg-sunk); }
-html[data-theme="dark"] #map { filter: invert(1) hue-rotate(180deg) brightness(0.9) saturate(0.7); }
-html[data-theme="dark"] #map .leaflet-container,
-html[data-theme="dark"] #map .leaflet-popup-content-wrapper { color: #111; }
-html[data-theme="dark"] #map .leaflet-marker-icon,
-html[data-theme="dark"] #map .leaflet-marker-shadow { filter: invert(1) hue-rotate(180deg); }
 
 .map-search-area {
   position: absolute;
@@ -653,10 +648,22 @@ html[data-theme="dark"] #map .leaflet-marker-shadow { filter: invert(1) hue-rota
   background: var(--text); color: var(--bg); border-color: var(--text);
 }
 
+/* Shown in place of the map when it can't start (e.g. no WebGL) */
+.map-fallback {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+}
+
+/* Markers. MapLibre positions the outer .map-marker with a transform, so hover
+   effects scale the pin or bubble inside it. */
+.map-marker { cursor: pointer; outline: none; }
+.map-marker:hover,
+.map-marker:focus-visible,
+.map-marker[data-hovered="true"] { z-index: 1; }
+
 /* Custom map marker — teardrop pin */
 .map-pin {
   width: 24px; height: 32px;
-  cursor: pointer;
   filter: drop-shadow(0 2px 3px rgba(0,0,0,.25));
   transform-origin: 50% 100%;
   transition: transform .14s ease;
@@ -672,77 +679,91 @@ html[data-theme="dark"] #map .leaflet-marker-shadow { filter: invert(1) hue-rota
   fill: var(--text);
   transition: fill .14s ease;
 }
-.map-pin:hover,
-.map-pin[data-hovered="true"] {
+.map-marker:hover .map-pin,
+.map-marker:focus-visible .map-pin,
+.map-marker[data-hovered="true"] .map-pin {
   transform: scale(1.18);
-  z-index: 1000;
 }
-.map-pin:hover .map-pin-shape,
-.map-pin[data-hovered="true"] .map-pin-shape {
+.map-marker:hover .map-pin-shape,
+.map-marker:focus-visible .map-pin-shape,
+.map-marker[data-hovered="true"] .map-pin-shape {
   fill: var(--accent);
   stroke: var(--accent);
 }
-.map-pin:hover .map-pin-dot,
-.map-pin[data-hovered="true"] .map-pin-dot {
+.map-marker:hover .map-pin-dot,
+.map-marker:focus-visible .map-pin-dot,
+.map-marker[data-hovered="true"] .map-pin-dot {
   fill: white;
 }
-
-/* Custom divIcons shouldn't carry Leaflet's default white box/border */
-.leaflet-div-icon { background: transparent; border: 0; }
 
 /* Clustered pins — a count bubble that scales with density */
 .map-cluster {
   display: grid; place-items: center;
-  width: 100%; height: 100%;
+  width: 34px; height: 34px;
   border-radius: 50%;
   background: var(--text);
   color: var(--bg);
   border: 2px solid var(--surface);
   font-family: var(--font-mono);
+  font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   box-shadow: 0 2px 6px rgba(0,0,0,.28);
-  transition: transform .14s ease, background .14s ease;
+  transition: transform .14s ease, background .14s ease, box-shadow .14s ease;
 }
-.map-cluster[data-size="s"] { font-size: 11.5px; }
-.map-cluster[data-size="m"] { font-size: 12.5px; }
+.map-cluster[data-size="m"] { width: 40px; height: 40px; font-size: 12.5px; }
 .map-cluster[data-size="l"] {
+  width: 48px; height: 48px;
   font-size: 13px;
   background: var(--accent);
   color: white;
   border-color: color-mix(in oklab, white 70%, var(--accent));
 }
-.map-cluster:hover { transform: scale(1.08); }
+.map-marker:hover .map-cluster { transform: scale(1.08); }
+/* Ring a focused cluster, or the one holding the event hovered in the list */
+.map-marker:focus-visible .map-cluster,
+.map-marker[data-hovered="true"] .map-cluster {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--accent), 0 2px 8px rgba(0,0,0,.3);
+}
 
-/* Compact hover tooltip */
-.leaflet-tooltip.map-tip-tooltip {
+/* Popups — pin previews, and the list for events sharing a venue */
+.maplibregl-popup.map-tip-popup .maplibregl-popup-content,
+.maplibregl-popup.map-list-popup .maplibregl-popup-content {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-2);
   padding: 0;
-  font: inherit;
-  white-space: normal;
-  max-width: 240px;
+  font: 13px/1.45 var(--font-sans);
   overflow: hidden;
 }
-.leaflet-tooltip.map-tip-tooltip::before { display: none; }
+.maplibregl-popup.map-tip-popup .maplibregl-popup-tip,
+.maplibregl-popup.map-list-popup .maplibregl-popup-tip { display: none; }
+/* Hover previews let the pointer through; tap previews are themselves the
+   tap target that opens the event. */
+.maplibregl-popup.map-tip-popup .maplibregl-popup-content { pointer-events: none; }
+.maplibregl-popup.map-tip-popup.map-tip-tappable .maplibregl-popup-content {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* Compact pin preview */
 .map-tip {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 12px 9px 9px;
   min-width: 180px;
+  max-width: 240px;
 }
 .map-tip-thumb {
   flex: 0 0 44px;
   width: 44px;
   height: 44px;
   border-radius: 7px;
-  background-size: cover;
-  background-position: center;
-  background-color: var(--surface-hover);
+  background: var(--surface-hover) center / cover no-repeat;
 }
 .map-tip-body {
   min-width: 0;
@@ -765,15 +786,71 @@ html[data-theme="dark"] #map .leaflet-marker-shadow { filter: invert(1) hue-rota
   color: var(--text-faint);
 }
 
+/* Events sharing a venue */
+.map-list { width: 264px; max-width: calc(100vw - 48px); }
+.map-list-head {
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.map-list-rows {
+  max-height: 248px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.map-list-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  color: inherit;
+  text-decoration: none;
+  outline: none;
+}
+.map-list-row:hover { background: var(--surface-hover); }
+.map-list-row:focus-visible {
+  background: var(--surface-hover);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.map-list-thumb {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--surface-hover) center / cover no-repeat;
+}
+.map-list-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.map-list-title {
+  font-weight: 600;
+  font-size: 12.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-list-date {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
 /* Touch: the preview is the tap target, so make it larger and tappable. */
 @media (hover: none) {
-  .leaflet-tooltip.map-tip-tooltip { max-width: 300px; }
   .map-tip {
     gap: 12px;
     padding: 12px 16px 12px 12px;
     min-width: 232px;
+    max-width: 300px;
   }
-  .map-tip-clickable { cursor: pointer; }
   .map-tip-thumb {
     flex: 0 0 56px;
     width: 56px;
@@ -782,22 +859,34 @@ html[data-theme="dark"] #map .leaflet-marker-shadow { filter: invert(1) hue-rota
   }
   .map-tip-title { font-size: 15px; }
   .map-tip-date { font-size: 12.5px; }
+  .map-list-row { padding: 8px 6px; }
+  .map-list-title { font-size: 14px; }
+  .map-list-date { font-size: 11.5px; }
 }
 
-/* Leaflet rectangle look */
-.leaflet-interactive.bbox-rect {
-  stroke: var(--text) !important;
-  stroke-width: 2 !important;
-  fill: var(--text) !important;
-  fill-opacity: 0.04 !important;
+/* Zoom buttons, styled like the other map controls */
+#map .maplibregl-ctrl-group {
+  background: color-mix(in oklab, var(--surface) 94%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
 }
+#map .maplibregl-ctrl-group button { width: 34px; height: 34px; }
+#map .maplibregl-ctrl-group button + button { border-top: 1px solid var(--border); }
+#map .maplibregl-ctrl button:not(:disabled):hover { background-color: var(--surface-hover); }
+html[data-theme="dark"] #map .maplibregl-ctrl-icon { filter: invert(1); }
 
-/* Hide leaflet attribution but keep accessible */
-.leaflet-control-attribution {
-  font-size: 9px !important;
-  background: rgba(255,255,255,.7) !important;
-  border-radius: var(--r-sm) !important;
+/* Attribution: small and quiet, but always legible */
+#map .maplibregl-ctrl-attrib {
+  font: 10px/16px var(--font-sans);
+  background: color-mix(in oklab, var(--surface) 72%, transparent);
+  color: var(--text-muted);
 }
+#map .maplibregl-ctrl-attrib a { color: inherit; }
+#map .maplibregl-ctrl-attrib.maplibregl-compact { background: var(--surface); }
+html[data-theme="dark"] #map .maplibregl-ctrl-attrib-button { filter: invert(1); }
 
 /* ── Advanced filter sheet ──────────────────────────────────── */
 .adv-backdrop {
@@ -1037,10 +1126,17 @@ html[data-theme="dark"] .twk-panel .twk-field {
   .map-controls { opacity: 1; transform: none; pointer-events: auto; }
   .map-search-area { top: 12px; }
 
+  /* Keep the attribution clear of the floating list/map toggle. On phones it
+     starts expanded, then collapses to an "i" in the corner once the map is
+     moved, so lift it above the toggle while it's open. On wider screens the
+     one-liner stays beside the toggle, wrapping if it has to. */
+  #map .maplibregl-ctrl-attrib.maplibregl-compact-show { margin-bottom: 72px; }
+  #map .maplibregl-ctrl-attrib:not(.maplibregl-compact) { max-width: calc(50vw - 60px); }
+
   /* Floating list ⇄ map switch.
      Centered with margin-auto (NOT transform): a persistent transform on a
-     fixed element creates its own compositor layer that Leaflet's transformed
-     map layer can intermittently paint over. Plain z-index ordering is stable. */
+     fixed element creates its own compositor layer that the map's transformed
+     layers can intermittently paint over. Plain z-index ordering is stable. */
   .view-toggle {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
     position: fixed;
@@ -1053,7 +1149,7 @@ html[data-theme="dark"] .twk-panel .twk-field {
     font-family: var(--font-display);
     font-size: 14px; font-weight: 600; letter-spacing: -0.01em;
     box-shadow: var(--shadow-pop);
-    /* Above Leaflet's panes/controls (which reach z-index ~1000) */
+    /* Above the map's markers, popups and controls */
     z-index: 1200;
     cursor: pointer;
     transition: background .14s ease, box-shadow .14s ease, opacity .12s ease;

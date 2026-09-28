@@ -9,17 +9,17 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
-<!-- Leaflet -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<!-- MapLibre GL — draws the OpenFreeMap vector basemap (free, no API key).
+     Pinned to 5.x: v6 dropped this self-contained UMD build. -->
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
+  integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="anonymous" />
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+  integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin="anonymous"></script>
 
-<!-- Leaflet.markercluster — groups nearby pins so dense maps stay fast -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
-  integrity="sha384-pmjIAcz2bAn0xukfxADbZIb3t8oRT9Sv0rvO+BR5Csr6Dhqq+nZs59P0pPKQJkEV" crossorigin="anonymous" />
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"
-  integrity="sha384-eXVCORTRlv4FUUgS/xmOyr66XBVraen8ATNLMESp92FKXLAMiKkerixTiBvXriZr" crossorigin="anonymous"></script>
+<!-- Supercluster — groups nearby pins so dense maps stay fast -->
+<script src="https://unpkg.com/supercluster@9.1.0/dist/supercluster.min.js"
+  integrity="sha384-b2jocofijO1GAbpdMm3wr8T1DXJnb3YV2zs8ZTQ+WsdJg8wvzbb/6DtCdPSZjlnf" crossorigin="anonymous"></script>
 
 <link rel="stylesheet" href="styles.css" />
 </head>
