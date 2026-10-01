@@ -322,112 +322,489 @@ function SkeletonList({ count = 3 }) {
 }
 
 // ── Map ──────────────────────────────────────────────────────
+// The basemap is OpenFreeMap's vector tiles (free: no API key, sign-up, or
+// usage limits), drawn with MapLibre GL. Event pins and cluster bubbles are
+// plain DOM markers so they follow the theme's CSS variables; Supercluster
+// does the grouping.
+const MAP_STYLES = {
+  light: "https://tiles.openfreemap.org/styles/positron",
+  dark:  "https://tiles.openfreemap.org/styles/dark",
+};
+// MapLibre draws 512px tiles, so its zoom levels sit one below Leaflet's.
+const MAP_MIN_ZOOM = 4;          // prevent zooming out beyond a regional view
+const MAP_MAX_ZOOM = 17;
+const MAP_FIT_PADDING = 20;
+const MAP_CLUSTER_RADIUS = 55;   // px
+// Keeps popups clear of the "Search this area" pill and the map's edges.
+const MAP_POPUP_PADDING = { top: 56, right: 8, bottom: 8, left: 8 };
+
+const MAP_PIN_SVG = `<svg viewBox="0 0 24 32" width="24" height="32" aria-hidden="true">
+  <path class="map-pin-shape" d="M12 1c5.5 0 10 4.3 10 9.7 0 7.3-10 20.3-10 20.3S2 18 2 10.7C2 5.3 6.5 1 12 1z"/>
+  <circle class="map-pin-dot" cx="12" cy="11" r="3.2"/>
+</svg>`;
+
+function mapBounds(b) {
+  return [[b.west, b.south], [b.east, b.north]];
+}
+
+// Popup offsets for every anchor MapLibre may flip to near an edge, keeping the
+// popup clear of a marker that reaches `up`px above its point, `down`px below
+// it, and `side`px to either side.
+function mapPopupOffsets(up, down, side) {
+  return {
+    "top": [0, down], "top-left": [0, down], "top-right": [0, down],
+    "bottom": [0, -up], "bottom-left": [0, -up], "bottom-right": [0, -up],
+    "left": [side, (down - up) / 2], "right": [-side, (down - up) / 2],
+  };
+}
+
+function mapEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+// Cover image as a background, so a missing or broken image just leaves the
+// placeholder tint behind.
+function mapThumb(url, className) {
+  const el = mapEl("div", className);
+  if (url) el.style.backgroundImage = `url(${JSON.stringify(url)})`;
+  return el;
+}
+
+// "Sep 28" (or "Sep 28, 7:00 PM") in the event's own time zone.
+function mapWhen(entry, withTime) {
+  const opts = withTime
+    ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+    : { month: "short", day: "numeric" };
+  const start = new Date(entry.start_at);
+  try {
+    return start.toLocaleString(undefined, { ...opts, timeZone: entry.event.timezone || undefined });
+  } catch {
+    return start.toLocaleString(undefined, opts); // unrecognised time zone
+  }
+}
+
+// Owns the event markers and popups on a map. Only markers in and around the
+// viewport exist at any time, so dense result sets stay fast.
+function createEventLayer(map, { onHover }) {
+  // Touch has no hover, so a tap previews an event and tapping the preview
+  // opens it. Going by the last pointer used keeps hybrid devices right: a
+  // mouse click opens straight away, a tap previews first.
+  let lastPointer = window.matchMedia?.("(hover: none)").matches ? "touch" : "mouse";
+  const trackPointer = (ev) => { lastPointer = ev.pointerType; };
+
+  let events = new Map();   // event id → { entry, lngLat }
+  let signature = null;
+  let index = null;         // Supercluster over the current events
+  let pins = new Map();     // event id → pin marker (built lazily, then reused)
+  let shown = new Map();    // "p<event id>" / "c<cluster id>" → marker on the map
+  let owner = new Map();    // event id → key of the marker (pin or cluster) showing it
+  let covered = null;       // [w, s, e, n] the shown markers were computed for
+  let coveredZoom = null;
+  let frame = 0;
+  let hoveredId = null;
+  let hoveredEl = null;
+
+  const popupOptions = {
+    closeButton: false, closeOnClick: false, focusAfterOpen: false,
+    maxWidth: "none", padding: MAP_POPUP_PADDING,
+  };
+  // Previews clear the pin (38px tall while enlarged) by a small gap.
+  const tip = new maplibregl.Popup({ ...popupOptions, className: "map-tip-popup",
+    offset: mapPopupOffsets(44, 6, 20) });
+  const list = new maplibregl.Popup({ ...popupOptions, className: "map-list-popup",
+    offset: mapPopupOffsets(32, 32, 32) });
+  let tipId = null;
+  let listKey = null;
+
+  const eventUrl = (id) => `https://lu.ma/${events.get(id).entry.event.url}`;
+  const openEvent = (id) => {
+    if (events.has(id)) window.open(eventUrl(id), "_blank", "noopener");
+  };
+
+  function showTip(id, tapped) {
+    const { entry, lngLat } = events.get(id);
+    const body = mapEl("div", "map-tip-body");
+    body.append(mapEl("div", "map-tip-title", entry.event.name || "Untitled"),
+                mapEl("div", "map-tip-date", mapWhen(entry)));
+    const content = mapEl("div", "map-tip");
+    content.append(mapThumb(entry.event.cover_url, "map-tip-thumb"), body);
+    // On touch the preview itself is the tap target that opens the event.
+    if (tapped) content.addEventListener("click", () => openEvent(id));
+    tip.setLngLat(lngLat).setDOMContent(content);
+    if (!tip.isOpen()) tip.addTo(map);
+    tip.getElement().classList.toggle("map-tip-tappable", tapped);
+    tipId = id;
+  }
+
+  function hideTip() {
+    tip.remove();
+    tipId = null;
+  }
+
+  // Events at the same venue can't be split apart by zooming in, so their
+  // cluster lists them instead.
+  function showList(key, focusFirst) {
+    const entries = index.getLeaves(Number(key.slice(1)), Infinity)
+      .map(f => events.get(f.properties.id).entry)
+      .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
+    const rows = mapEl("div", "map-list-rows");
+    for (const entry of entries) {
+      const id = entry.event.api_id;
+      const row = mapEl("a", "map-list-row");
+      row.href = eventUrl(id);
+      row.target = "_blank";
+      row.rel = "noopener noreferrer";
+      const body = mapEl("div", "map-list-body");
+      body.append(mapEl("div", "map-list-title", entry.event.name || "Untitled"),
+                  mapEl("div", "map-list-date", mapWhen(entry, true)));
+      row.append(mapThumb(entry.event.cover_url, "map-list-thumb"), body);
+      row.addEventListener("pointerenter", (ev) => { if (ev.pointerType === "mouse") onHover(id); });
+      row.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") onHover(null); });
+      row.addEventListener("focus", () => onHover(id));
+      row.addEventListener("blur", () => onHover(null));
+      rows.append(row);
+    }
+    const content = mapEl("div", "map-list");
+    content.append(mapEl("div", "map-list-head", `${entries.length} events here`), rows);
+    hideTip();
+    list.setLngLat(shown.get(key).getLngLat()).setDOMContent(content);
+    if (!list.isOpen()) list.addTo(map);
+    listKey = key;
+    if (focusFirst) rows.firstChild.focus();
+  }
+
+  function hideList() {
+    list.remove();
+    listKey = null;
+  }
+
+  function dismiss() {
+    hideTip();
+    hideList();
+    onHover(null);
+  }
+
+  // Pointer hover (desktop) and keyboard focus preview a pin.
+  function preview(id) {
+    showTip(id, false);
+    onHover(id);
+  }
+
+  function unpreview(id) {
+    if (tipId === id) hideTip();
+    onHover(null);
+  }
+
+  function activatePin(id) {
+    if (lastPointer === "mouse") {
+      openEvent(id);
+      return;
+    }
+    // Touch: tapping a pin only previews it; tapping the preview opens it.
+    hideList();
+    showTip(id, true);
+    onHover(id);
+  }
+
+  function activateCluster(key, fromKeyboard) {
+    const center = shown.get(key).getLngLat();
+    const zoom = index.getClusterExpansionZoom(Number(key.slice(1)));
+    dismiss();
+    if (zoom > map.getMaxZoom()) showList(key, fromKeyboard);
+    else map.easeTo({ center, zoom });
+  }
+
+  const onActivateKey = (activate) => (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    activate();
+  };
+
+  function pinFor(id) {
+    if (pins.has(id)) return pins.get(id);
+    const { entry, lngLat } = events.get(id);
+    const el = mapEl("div", "map-marker");
+    el.innerHTML = `<div class="map-pin">${MAP_PIN_SVG}</div>`;
+    el.dataset.id = id;
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", `${entry.event.name || "Untitled"}, ${mapWhen(entry)}`);
+    el.addEventListener("pointerenter", (ev) => { if (ev.pointerType === "mouse") preview(id); });
+    el.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") unpreview(id); });
+    el.addEventListener("focus", () => { if (el.matches(":focus-visible")) preview(id); });
+    el.addEventListener("blur", () => unpreview(id));
+    el.addEventListener("keydown", onActivateKey(() => openEvent(id)));
+    const marker = new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat(lngLat);
+    pins.set(id, marker);
+    return marker;
+  }
+
+  function clusterFor(key, count, lngLat) {
+    const bubble = mapEl("div", "map-cluster");
+    bubble.dataset.size = count < 10 ? "s" : count < 50 ? "m" : "l";
+    bubble.append(mapEl("span", null, String(count)));
+    const el = mapEl("div", "map-marker");
+    el.append(bubble);
+    el.dataset.cluster = key;
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", `${count} events`);
+    el.addEventListener("keydown", onActivateKey(() => activateCluster(key, true)));
+    return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat(lngLat);
+  }
+
+  // Clicks on markers bubble up as map clicks, which MapLibre already drops
+  // when the pointer moved, so dragging the map from a pin doesn't open it.
+  const onClick = (e) => {
+    const target = e.originalEvent.target;
+    const el = target instanceof Element ? target.closest(".map-marker") : null;
+    if (el?.dataset.id) activatePin(el.dataset.id);
+    else if (el?.dataset.cluster) activateCluster(el.dataset.cluster, false);
+    else dismiss(); // tapping the empty map dismisses any open preview
+  };
+  const onKeyDown = (ev) => { if (ev.key === "Escape") dismiss(); };
+
+  // Brings the markers on the map in line with the clusters for the view.
+  function update() {
+    frame = 0;
+    if (!index) return;
+    const zoom = Math.round(map.getZoom());
+    const b = map.getBounds();
+    // Cover half a screen past each edge so short pans never reveal gaps.
+    const dx = (b.getEast() - b.getWest()) / 2;
+    const dy = (b.getNorth() - b.getSouth()) / 2;
+    covered = [b.getWest() - dx, b.getSouth() - dy, b.getEast() + dx, b.getNorth() + dy];
+    coveredZoom = zoom;
+
+    const next = new Map();
+    owner = new Map();
+    for (const f of index.getClusters(covered, zoom)) {
+      const p = f.properties;
+      if (p.cluster) {
+        const key = "c" + p.cluster_id;
+        next.set(key, shown.get(key) || clusterFor(key, p.point_count, f.geometry.coordinates));
+        for (const leaf of index.getLeaves(p.cluster_id, Infinity)) owner.set(leaf.properties.id, key);
+      } else {
+        const key = "p" + p.id;
+        next.set(key, shown.get(key) || pinFor(p.id));
+        owner.set(p.id, key);
+      }
+    }
+    shown.forEach((marker, key) => { if (!next.has(key)) marker.remove(); });
+    next.forEach((marker, key) => { if (!shown.has(key)) marker.addTo(map); });
+    shown = next;
+
+    // Close popups whose marker merged into a cluster or left the area.
+    if (tipId && !shown.has("p" + tipId)) hideTip();
+    if (listKey && !shown.has(listKey)) hideList();
+    paintHover();
+    syncTabStops();
+  }
+
+  // Only markers actually on screen are Tab stops; the rest sit in the margin
+  // kept around the view for smooth panning.
+  function syncTabStops() {
+    const { clientWidth: w, clientHeight: h } = map.getContainer();
+    shown.forEach((marker) => {
+      const { x, y } = map.project(marker.getLngLat());
+      marker.getElement().tabIndex = x >= 0 && y >= 0 && x <= w && y <= h ? 0 : -1;
+    });
+  }
+
+  const onMove = () => {
+    if (frame || !index) return;
+    const b = map.getBounds();
+    const inside = coveredZoom === Math.round(map.getZoom()) &&
+      b.getWest() >= covered[0] && b.getSouth() >= covered[1] &&
+      b.getEast() <= covered[2] && b.getNorth() <= covered[3];
+    if (!inside) frame = requestAnimationFrame(update);
+  };
+
+  // Highlights the hovered event's pin, or the cluster it's hidden in.
+  function paintHover() {
+    const key = hoveredId && owner.get(hoveredId);
+    const el = key ? shown.get(key).getElement() : null;
+    if (el === hoveredEl) return;
+    if (hoveredEl) delete hoveredEl.dataset.hovered;
+    if (el) el.dataset.hovered = "true";
+    hoveredEl = el;
+  }
+
+  function clear() {
+    cancelAnimationFrame(frame);
+    frame = 0;
+    shown.forEach(marker => marker.remove());
+    shown = new Map();
+    owner = new Map();
+    pins = new Map();
+    covered = coveredZoom = null;
+    hoveredEl = null;
+    hideTip();
+    hideList();
+  }
+
+  function setEntries(entries) {
+    const next = new Map();
+    for (const entry of entries) {
+      const id = entry?.event?.api_id;
+      const c = entry?.event?.coordinate;
+      const lngLat = [parseFloat(c?.longitude), parseFloat(c?.latitude)];
+      if (id && lngLat.every(Number.isFinite)) next.set(id, { entry, lngLat });
+    }
+    events = next;
+    // Re-sorting or saving an event hands back the same events: keep the
+    // markers (and any open popup) rather than rebuilding them.
+    const ids = [...next.keys()].sort();
+    const sig = ids.map(id => `${id}@${next.get(id).lngLat}`).join("|");
+    if (sig === signature) return;
+    signature = sig;
+    clear();
+    index = new Supercluster({ radius: MAP_CLUSTER_RADIUS, maxZoom: MAP_MAX_ZOOM }).load(
+      ids.map(id => ({
+        type: "Feature",
+        properties: { id },
+        geometry: { type: "Point", coordinates: next.get(id).lngLat },
+      }))
+    );
+    update();
+  }
+
+  const canvas = map.getCanvasContainer();
+  canvas.addEventListener("pointerdown", trackPointer, true);
+  map.getContainer().addEventListener("keydown", onKeyDown);
+  map.on("move", onMove);
+  map.on("moveend", syncTabStops);
+  map.on("click", onClick);
+
+  return {
+    setEntries,
+    setHovered(id) {
+      hoveredId = id;
+      paintHover();
+    },
+    destroy() {
+      clear();
+      index = null;
+      canvas.removeEventListener("pointerdown", trackPointer, true);
+      map.getContainer().removeEventListener("keydown", onKeyDown);
+      map.off("move", onMove);
+      map.off("moveend", syncTabStops);
+      map.off("click", onClick);
+    },
+  };
+}
+
 function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }) {
   const containerRef = useR(null);
   const mapRef = useR(null);
-  const clusterRef = useR(null);
-  const markersRef = useR({});
+  const layerRef = useR(null);
+  const styleRef = useR(null);
   const moveTimer = useR(null);
-  const readyRef = useR(false);
-  const fittedRef = useR(false);
-  const openTipRef = useR(null);   // id of the marker whose preview is open (touch)
+  const bboxRef = useR(bbox);
+  const onHoverRef = useR(onHover);
+  bboxRef.current = bbox;
+  onHoverRef.current = onHover;
   const [pendingArea, setPendingArea] = useS(false);
-
-  // Touch devices have no hover, so a single tap can't both preview AND open.
-  // On those, the first tap shows the preview and a second tap follows through.
-  const isTouch = typeof window !== "undefined" &&
-    window.matchMedia && window.matchMedia("(hover: none)").matches;
-
-  const fitToBbox = (map, b) => {
-    map.fitBounds([[b.south, b.west], [b.north, b.east]], { padding: [20, 20] });
-  };
+  const [failed, setFailed] = useS(false);
 
   // Init map once
   useE(() => {
-    if (!containerRef.current || mapRef.current) return;
-    const map = L.map(containerRef.current, {
-      zoomControl: false,
-      attributionControl: true,
-      minZoom: 5,   // prevent zooming out beyond a regional view
-      maxZoom: 18,
-    });
+    const container = containerRef.current;
+    if (!container || mapRef.current) return;
+    const b = bboxRef.current;
+    const style = MAP_STYLES[theme] || MAP_STYLES.light;
     // On mobile the map can be initialised while its pane is hidden (list view),
-    // so the container has no size and fitBounds would be meaningless. Only fit
-    // now if we have real dimensions; otherwise defer to the resize effect.
-    if (containerRef.current.clientHeight > 0) {
-      fitToBbox(map, bbox);
-      fittedRef.current = true;
-    } else {
-      map.setView([(bbox.north + bbox.south) / 2, (bbox.east + bbox.west) / 2], 9);
+    // so the container has no size and fitting the bbox would be meaningless.
+    // Only fit now if we have real dimensions; otherwise fit once it's shown.
+    const hasSize = container.clientWidth > 0 && container.clientHeight > 0;
+    let map;
+    try {
+      if (typeof maplibregl === "undefined" || typeof Supercluster === "undefined") {
+        throw new Error("map scripts failed to load");
+      }
+      map = new maplibregl.Map({
+        container,
+        style,
+        ...(hasSize
+          ? { bounds: mapBounds(b), fitBoundsOptions: { padding: MAP_FIT_PADDING } }
+          : { center: [(b.east + b.west) / 2, (b.north + b.south) / 2], zoom: 8 }),
+        minZoom: MAP_MIN_ZOOM,
+        maxZoom: MAP_MAX_ZOOM,
+        // Flat and north-up: no rotating or tilting.
+        dragRotate: false,
+        touchPitch: false,
+        maxPitch: 0,
+        attributionControl: {
+          customAttribution: '<a href="https://maplibre.org/" target="_blank">MapLibre</a>',
+        },
+      });
+    } catch (err) {
+      // No WebGL, or the scripts were blocked: the list still works without it.
+      console.error("Map unavailable:", err);
+      setFailed(true);
+      return;
     }
-
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
-      minZoom: 5,
-      maxZoom: 18,
-      attribution: '© OpenStreetMap, © CARTO',
-    }).addTo(map);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png", {
-      minZoom: 5,
-      maxZoom: 18,
-      pane: "shadowPane",
-    }).addTo(map);
-
-    L.control.zoom({ position: "bottomright" }).addTo(map);
-
-    // Group nearby pins so dense result sets stay fast. Only markers in view are
-    // rendered; clicking a cluster zooms to its bounds.
-    const cluster = L.markerClusterGroup({
-      showCoverageOnHover: false,
-      chunkedLoading: true,
-      maxClusterRadius: 55,
-      spiderfyOnMaxZoom: true,
-      iconCreateFunction: (c) => {
-        const n = c.getChildCount();
-        const size = n < 10 ? 34 : n < 50 ? 40 : 48;
-        return L.divIcon({
-          className: "",
-          html: `<div class="map-cluster" data-size="${n < 10 ? "s" : n < 50 ? "m" : "l"}"><span>${n}</span></div>`,
-          iconSize: [size, size],
-          iconAnchor: [size / 2, size / 2],
-        });
-      },
-    });
-    map.addLayer(cluster);
-    clusterRef.current = cluster;
-
+    map.touchZoomRotate.disableRotation();
+    map.keyboard.disableRotation();
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     mapRef.current = map;
+    styleRef.current = style;
+    layerRef.current = createEventLayer(map, { onHover: (id) => onHoverRef.current(id) });
 
-    const handleMove = () => {
-      // Ignore the initial fitBounds-triggered moveend
-      if (!readyRef.current) return;
+    // "Search this area" is for moves the user makes, not our own fits or the
+    // container resizing (e.g. switching between list and map on mobile).
+    let resizing = false;
+    const handleResize = () => {
+      resizing = true;
+      Promise.resolve().then(() => { resizing = false; });
+    };
+    const handleMoveEnd = (e) => {
+      if (e.programmatic || resizing) return;
       clearTimeout(moveTimer.current);
       moveTimer.current = setTimeout(() => setPendingArea(true), 250);
     };
-    map.on("moveend", handleMove);
-    map.on("zoomend", handleMove);
+    map.on("resize", handleResize);
+    map.on("moveend", handleMoveEnd);
 
-    // Tapping the empty map dismisses an open preview (touch flow).
-    const handleMapClick = () => {
-      const openId = openTipRef.current;
-      if (openId && markersRef.current[openId]) {
-        markersRef.current[openId].closeTooltip();
-      }
-      openTipRef.current = null;
-      onHover(null);
-    };
-    map.on("click", handleMapClick);
-
-    // Mark ready after the first paint settles so the initial fit doesn't
-    // trigger the "Search this area" button.
-    setTimeout(() => { readyRef.current = true; }, 500);
+    // Run the deferred initial fit once a hidden container gets a size.
+    const sizeObserver = new ResizeObserver(() => {
+      if (!container.clientWidth || !container.clientHeight) return;
+      sizeObserver.disconnect();
+      map.resize();
+      map.fitBounds(mapBounds(bboxRef.current),
+        { padding: MAP_FIT_PADDING, animate: false }, { programmatic: true });
+    });
+    if (!hasSize) sizeObserver.observe(container);
 
     return () => {
-      map.off("moveend", handleMove);
-      map.off("zoomend", handleMove);
-      map.off("click", handleMapClick);
+      sizeObserver.disconnect();
+      clearTimeout(moveTimer.current);
+      layerRef.current.destroy();
+      layerRef.current = null;
+      map.remove();
+      mapRef.current = null;
     };
   // eslint-disable-next-line
   }, []);
+
+  // Follow the app theme. Both styles share their tiles, so MapLibre diffs the
+  // style in place rather than reloading the map.
+  useE(() => {
+    const map = mapRef.current;
+    const style = MAP_STYLES[theme] || MAP_STYLES.light;
+    if (!map || styleRef.current === style) return;
+    styleRef.current = style;
+    map.setStyle(style);
+  }, [theme]);
+
+  // Update markers when entries change
+  useE(() => { layerRef.current?.setEntries(entries); }, [entries]);
+
+  // Update hover state on existing markers (without rebuilding)
+  useE(() => { layerRef.current?.setHovered(hoveredId); }, [hoveredId]);
 
   // When the parent commits a new bbox (after a search), hide the pending button.
   useE(() => { setPendingArea(false); }, [bbox]);
@@ -436,141 +813,52 @@ function MapView({ entries, bbox, onChange, hoveredId, onHover, loading, theme }
     const map = mapRef.current;
     if (!map) return;
     const b = map.getBounds();
-    const newBbox = {
-      west:  b.getWest(),
-      east:  b.getEast(),
+    // After panning across the date line MapLibre reports longitudes past ±180;
+    // shift everything back by the same whole turns as the center.
+    const c = map.getCenter();
+    const center = c.wrap();
+    const shift = center.lng - c.lng;
+    setPendingArea(false);
+    onChange({
+      west:  b.getWest() + shift,
+      east:  b.getEast() + shift,
       south: b.getSouth(),
       north: b.getNorth(),
-    };
-    const c = map.getCenter();
-    setPendingArea(false);
-    onChange(newBbox, { lat: c.lat, lng: c.lng });
+    }, { lat: center.lat, lng: center.lng });
   };
 
-  // Update markers when entries change
-  useE(() => {
-    const map = mapRef.current;
-    const cluster = clusterRef.current;
-    if (!map || !cluster) return;
-
-    // Drop old markers (clearing the cluster removes them all at once)
-    cluster.clearLayers();
-    markersRef.current = {};
-    openTipRef.current = null;
-
-    const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-
-    entries.forEach((entry) => {
-      const c = entry.event.coordinate;
-      if (!c) return;
-      const id = entry.event.api_id;
-      const e = entry.event;
-      const icon = L.divIcon({
-        className: "",
-        html: `<div class="map-pin" data-id="${id}" data-hovered="${hoveredId === id}">
-          <svg viewBox="0 0 24 32" width="24" height="32" aria-hidden="true">
-            <path class="map-pin-shape" d="M12 1c5.5 0 10 4.3 10 9.7 0 7.3-10 20.3-10 20.3S2 18 2 10.7C2 5.3 6.5 1 12 1z"/>
-            <circle class="map-pin-dot" cx="12" cy="11" r="3.2"/>
-          </svg>
-        </div>`,
-        iconSize: [24, 32],
-        iconAnchor: [12, 32],
-      });
-
-      const startDate = new Date(entry.start_at);
-      const dateLabel = startDate.toLocaleDateString(undefined, {
-        month: "short", day: "numeric",
-        timeZone: e.timezone || undefined,
-      });
-
-      const tipHtml = `
-        <div class="map-tip">
-          ${e.cover_url ? `<div class="map-tip-thumb" style="background-image:url('${escapeHtml(e.cover_url)}')"></div>` : `<div class="map-tip-thumb map-tip-thumb-fallback"></div>`}
-          <div class="map-tip-body">
-            <div class="map-tip-title">${escapeHtml(e.name || "Untitled")}</div>
-            <div class="map-tip-date">${escapeHtml(dateLabel)}</div>
-          </div>
-        </div>`;
-
-      const marker = L.marker([c.latitude, c.longitude], { icon })
-        .bindTooltip(tipHtml, {
-          direction: "top",
-          // Sit a little higher on touch so the preview clears the pin.
-          offset: [0, isTouch ? -22 : -12],
-          opacity: 1,
-          className: "map-tip-tooltip",
-          sticky: false,
-          // On touch the preview itself is the tap target that opens the event.
-          interactive: isTouch,
-        });
-      const openEvent = () => window.open(`https://lu.ma/${entry.event.url}`, "_blank");
-      marker.on("mouseover", () => onHover(id));
-      marker.on("mouseout", () => onHover(null));
-      marker.on("click", () => {
-        if (!isTouch) { openEvent(); return; }
-        // Touch: tapping a pin only previews it; tapping the preview opens it.
-        if (openTipRef.current && openTipRef.current !== id &&
-            markersRef.current[openTipRef.current]) {
-          markersRef.current[openTipRef.current].closeTooltip();
-        }
-        openTipRef.current = id;
-        onHover(id);
-        marker.openTooltip();
-        const tip = marker.getTooltip();
-        const tipEl = tip && tip.getElement();
-        if (tipEl) {
-          tipEl.classList.add("map-tip-clickable");
-          tipEl.onclick = (ev) => { ev.stopPropagation(); openEvent(); };
-        }
-      });
-      cluster.addLayer(marker);
-      markersRef.current[id] = marker;
+  const locate = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(pos => {
+      mapRef.current?.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 12 });
     });
-  }, [entries]);
-
-  // Update hover state on existing pins (without rebuilding)
-  useE(() => {
-    document.querySelectorAll(".map-pin").forEach(el => {
-      const id = el.dataset.id;
-      el.dataset.hovered = (id === hoveredId) ? "true" : "false";
-    });
-  }, [hoveredId]);
-
-  // Resize when layout changes (e.g. toggling between mobile list/map views).
-  // Once the pane actually has size, run the deferred initial fit.
-  useE(() => {
-    setTimeout(() => {
-      const map = mapRef.current;
-      if (!map) return;
-      map.invalidateSize();
-      if (!fittedRef.current && containerRef.current?.clientHeight > 0) {
-        fitToBbox(map, bbox);
-        fittedRef.current = true;
-      }
-    }, 200);
-  });
+  };
 
   return (
     <>
       <div ref={containerRef} id="map"></div>
+      {failed && (
+        <div className="map-fallback">
+          <div className="state">
+            <div className="state-icon"><Icon name="map" size={18} /></div>
+            <div className="state-title">Map unavailable</div>
+            <div>This browser couldn't start the map. The event list still works.</div>
+          </div>
+        </div>
+      )}
       {pendingArea && (
         <button className="map-search-area" onClick={searchThisArea} disabled={loading}>
           <Icon name="search" size={13} />
           {loading ? "Searching…" : "Search this area"}
         </button>
       )}
-      <div className="map-controls">
-        <button className="map-btn" title="Find my location" onClick={() => {
-          if (!navigator.geolocation) return;
-          navigator.geolocation.getCurrentPosition(pos => {
-            mapRef.current?.flyTo([pos.coords.latitude, pos.coords.longitude], 13);
-          });
-        }}>
-          <Icon name="target" size={16} />
-        </button>
-      </div>
+      {!failed && (
+        <div className="map-controls">
+          <button className="map-btn" title="Find my location" aria-label="Find my location" onClick={locate}>
+            <Icon name="target" size={16} />
+          </button>
+        </div>
+      )}
     </>
   );
 }
